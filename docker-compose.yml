@@ -1,0 +1,22 @@
+# bw_sync 容器运行示例（一次性跑完即退的任务型容器，不是常驻服务）
+# 用法：
+#   cp config.example.json config.json 并填好
+#   cp .env.example .env 并填好主密码（chmod 600 .env，别提交到任何仓库）
+#   docker compose build
+#   docker compose build
+#   docker compose run --rm bw-sync                                   # 执行一次同步（默认 --apply）
+#   docker compose run --rm --entrypoint python3 bw-sync /app/bw_sync.py   # 只读预览
+# 定时：宿主机 crontab 里加一行 docker compose run 即可，容器本身不用常驻。
+services:
+  bw-sync:
+    build: .
+    image: bw-sync:latest
+    # 一次性任务：跑完退出，不要 restart
+    env_file:
+      - .env
+    volumes:
+      # 配置、状态、两边 bw 登录态全部落在宿主机目录，容器重建不丢
+      - ./config.json:/app/config.json:ro
+      - ./bw-sync-state.json:/app/bw-sync-state.json
+      - ./bw-node:/app/bw-node
+      - ./bw-vault:/app/bw-vault

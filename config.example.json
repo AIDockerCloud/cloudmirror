@@ -1,0 +1,21 @@
+{
+  "bw": "",
+  "sides": {
+    "node": {
+      "label": "NodeWarden",
+      "server": "https://nodewarden.example.com",
+      "email": "user@example.com",
+      "password_env": "BW_SYNC_NODE_PASSWORD",
+      "api_client_id_env": "BW_SYNC_NODE_CLIENTID",
+      "api_client_secret_env": "BW_SYNC_NODE_CLIENTSECRET"
+    },
+    "vault": {
+      "label": "Vaultwarden",
+      "server": "https://vault.example.com",
+      "email": "user@example.com",
+      "password_env": "BW_SYNC_VAULT_PASSWORD",
+      "api_client_id_env": "BW_SYNC_VAULT_CLIENTID",
+      "api_client_secret_env": "BW_SYNC_VAULT_CLIENTSECRET"
+    }
+  }
+}

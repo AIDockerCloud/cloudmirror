@@ -1,0 +1,22 @@
+# Bitwarden CLI & runtime data
+config.json
+.env
+bw-sync-state.json
+bw-sync-state.json.tmp
+bw-node/
+bw-vault/
+
+# Tooling & Agent environments
+.claude/
+.agents/
+
+# PCMP derivative cache
+ai/.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# System / Editor
+.DS_Store
+Thumbs.db
