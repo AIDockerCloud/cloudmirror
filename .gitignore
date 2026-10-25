@@ -1,10 +1,16 @@
 # Bitwarden CLI & runtime data
 config.json
+config.prod.json
+config.test.json
+!config.example.json
+!config.dev.json
 .env
 bw-sync-state.json
 bw-sync-state.json.tmp
 bw-node/
 bw-vault/
+bw-*/
+data/
 
 # Tooling & Agent environments
 .claude/

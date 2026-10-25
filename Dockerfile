@@ -3,11 +3,12 @@
 # 哈希为从 GitHub 官方 release 下载后本地计算所得（官方未随 release 附校验文件）。
 FROM python:3.12-slim
 
-ARG BW_VERSION=2026.10.0
+ARG BW_VERSION=2026.8.0
 ARG TARGETARCH
 # TARGETARCH=amd64 时用 x64 包，arm64 时用 arm64 包
-ARG BW_SHA256_AMD64=a300959a347bd71ff571da75687c8388da2ecd747a20f0abddd18643eb9466ba
-ARG BW_SHA256_ARM64=ea6203a565c48d3107bb8511221bb1e436e06c9bc07d05ba679d8921648e83c9
+# 经实测，2026.9.0+ 在 Vaultwarden 上因缺失 key-management 接口触发 KeyIdBackfillError，2026.8.0 兼容性最佳
+ARG BW_SHA256_AMD64=d8bbc213d3dbdb701709386af6ea3bd763482f922ae0b538fdc3fdb88b1b1704
+ARG BW_SHA256_ARM64=1ad51c5f3c5b597140e6cbbfeff529c2112ce8e3f9a72ad4ef76451be6cb77fe
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl unzip ca-certificates \
@@ -26,6 +27,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY bw_sync.py /app/bw_sync.py
+COPY s3_sync.py /app/s3_sync.py
+COPY server.py /app/server.py
+COPY web /app/web
 
 # config.json、bw-sync-state.json、bw-node/、bw-vault/ 都通过 volume 挂进 /app
 # 主密码与（可选的）API key 只从环境变量注入，绝不写进镜像

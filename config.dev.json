@@ -1,0 +1,29 @@
+{
+  "bw": "bw",
+  "sides": {
+    "bw_node_dev": {
+      "label": "NodeWarden 开发测试库",
+      "server": "https://node.example.com",
+      "email": "dev-node@example.com",
+      "password_env": "BW_SYNC_NODE_DEV_PASSWORD",
+      "api_client_id_env": "BW_SYNC_NODE_DEV_CLIENTID",
+      "api_client_secret_env": "BW_SYNC_NODE_DEV_CLIENTSECRET"
+    },
+    "bw_vault_dev": {
+      "label": "Vaultwarden 模拟测试库",
+      "server": "https://vault.example.com",
+      "email": "dev-vault@example.com",
+      "password_env": "BW_SYNC_VAULT_DEV_PASSWORD",
+      "api_client_id_env": "BW_SYNC_VAULT_DEV_CLIENTID",
+      "api_client_secret_env": "BW_SYNC_VAULT_DEV_CLIENTSECRET"
+    },
+    "bw_third_dev": {
+      "label": "Bitwarden 官方沙盒",
+      "server": "https://vault.bitwarden.com",
+      "email": "sandbox@example.com",
+      "password_env": "BW_SYNC_SANDBOX_PASSWORD",
+      "api_client_id_env": "BW_SYNC_SANDBOX_CLIENTID",
+      "api_client_secret_env": "BW_SYNC_SANDBOX_CLIENTSECRET"
+    }
+  }
+}

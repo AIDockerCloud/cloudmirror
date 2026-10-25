@@ -20,3 +20,20 @@ services:
       - ./bw-sync-state.json:/app/bw-sync-state.json
       - ./bw-node:/app/bw-node
       - ./bw-vault:/app/bw-vault
+
+  web-ui:
+    build: .
+    image: bw-sync:latest
+    container_name: cloudmirror-ui
+    entrypoint: ["python3", "/app/server.py", "--host", "0.0.0.0", "--port", "8765"]
+    ports:
+      - "8765:8765"
+    env_file:
+      - .env
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./bw-sync-state.json:/app/bw-sync-state.json
+      - ./bw-node:/app/bw-node
+      - ./bw-vault:/app/bw-vault
+      - ./data:/app/data
+    restart: unless-stopped

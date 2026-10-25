@@ -1,51 +1,59 @@
 ---
 pcmp_version: "2.2"
-revision: 1
-updated: 2026-10-24
+revision: 10
+updated: 2026-10-26
 ---
 
 # 当前唯一活动任务 (TASK.md)
 
 ## 当前任务与核心目标 (Current Task & Objective)
-- **任务名称**：cloudmirror 项目 PCMP v2.2 工程上下文治理体系初始化。
-- **核心目标**：参考 `AIDockerCloud/PCMP` 协议与工具链规范，建立完备的 PCMP Full 档位管理架构，补齐 `.gitignore`、样板配置（`config.example.json`、`.env.example`）、测试套件（`tests/`），并通过合规性自动化检查与单元测试验证。
+- **任务名称**：独立条目判定（项目名称+账号）、多自动填充选项规范化、哈希优先 1-to-1 配对与回收站联动感知防复活机制。
+- **核心目标**：
+  1. **独立条目判定**：严格遵循用户要求，以项目名称与账号共同构成独立条目标识，相同项目名称不同账号独立存在不冲突；
+  2. **自动填充选项 (URIs) 规范化**：多 URI 排序保证数组乱序哈希确定性，去除多余空白，全面支持密码与自动填充多项的稳健对比；
+  3. **哈希优先 1-to-1 精确配对**：同名同账号多条目场景下，通过精确哈希 1-to-1 优先建立配对，彻底消除假重名歧义组；
+  4. **回收站联动感知与防复活墓碑**：引入 `pull_trash()`，若单端条目在对端回收站中存在相同哈希，精准识别为“在对端已删除”并沉淀墓碑，绝不误报重名，绝不错误复活；全链路条目计数严格排除回收站条目；
+  5. **轮询调优与手动刷新**：前端轮询间隔设为 20 秒倒计时，并提供手动立即刷新按钮。
 
 ## 背景与范围 (Why & Scope)
-- **背景**：当前项目已实现核心同步脚本 `bw_sync.py` 与容器化方案，但缺乏标准化的工程上下文治理、敏感信息隔离忽略规则、测试接入与持续合规校验能力。
+- **背景**：此前真实生产库比对时出现 4 组歧义重名假报警（`iforgot.apple.com`、`login.live.com`、`www.qianglie.com`、`xn--2os8j.us.ci`）。经实测核查，前 3 组各 2 条条目的密码与自动填充选项完全一致；而第 4 组在 Vaultwarden 端是被用户主动放进了回收站。旧引擎未感知回收站且多候选直接弃权报歧义，导致用户困惑。
 - **范围**：
-  - 协议原版与派生工具：`PROJECT_CONTEXT_ZH.md`、`PROJECT_CONTEXT.md`、`scripts/pcmp_index.py`、`skills/pcmp/`；
-  - 规范文件与安全规则：`AGENTS.md`、`.gitignore`、`config.example.json`、`.env.example`；
-  - 上下文真源：`ai/PROJECT.md`、`ai/ARCHITECTURE.md`、`ai/STATE.md`、`ai/TASK.md`、`ai/DECISIONS.md`、`ai/ISSUES.md` 与 `ai/sessions/`；
-  - 测试套件：`tests/test_pcmp_index.py` 与 `tests/test_bw_sync.py`。
+  - 核心引擎：`bw_sync.py`（`normalize_item_name`、`normalize_item` 多 URI 排序、`natural_key` 重构、`RealBwClient.pull_trash`、`FakeBwClient.pull_trash`、`plan_sync` 哈希优先配对与回收站墓碑感知、自测扩充至 12 组场景）；
+  - 后端服务：`server.py`（`count_active_items` 排除回收站与组织条目，更新数据源与连接测试中的条目统计）；
+  - 前端界面：`web/app.js`（20 秒倒计时轮询与手动刷新按钮）；
+  - 文档与决策：`ai/DECISIONS.md`（DEC-008）、`ai/STATE.md`、`ai/TASK.md`。
 
 ## 约束与非目标 (Constraints & Non-Goals)
 - **硬约束**：
   - 遵循 STC（Simplified Technical Chinese）规范；
-  - 严禁修改通用协议规范原版；
-  - 严禁在任何提交文件或缓存中泄露真实密码与敏感凭证；
-  - 派生工具与测试仅依赖 Python 3 标准库，零 pip 外部依赖。
-- **非目标**：
-  - 本任务不连接真机服务端执行写入同步；
-  - 暂不扩展 v2 复杂特性（如附件同步或 Passkey 凭据迁移）。
+  - 核心安全哲学：“只增不改不删”，单侧删除记入墓碑绝不抹除另一侧，亦绝不违背意愿复活已进回收站的条目；
+  - 零外部 pip 依赖（仅依赖 Python 3 标准库）；
+  - PCMP v2.2 合规检查 0 错误 0 警告。
 
 ## 关联关键文件 (Relevant Files)
-- `AGENTS.md`：协同与智能体规范
-- `PROJECT_CONTEXT_ZH.md` & `PROJECT_CONTEXT.md`：核心协议中英文原版
-- `ai/PROJECT.md`、`ai/ARCHITECTURE.md`、`ai/STATE.md`、`ai/DECISIONS.md`、`ai/ISSUES.md`：上下文真源
-- `scripts/pcmp_index.py` & `skills/pcmp/scripts/pcmp_index.py`：派生索引与合规检查器
-- `tests/test_pcmp_index.py` & `tests/test_bw_sync.py`：测试套件
-- `.gitignore`、`config.example.json`、`.env.example`：安全隔离与样板配置
+- `bw_sync.py`：核心对比算法、自然键、哈希优先配对与回收站感知
+- `server.py`：活动条目统计与后台异步执行
+- `web/app.js`：前端 20 秒轮询与手动刷新
+- `ai/DECISIONS.md`：记录 DEC-008
 
 ## 验收结果 (Acceptance Result)
-- [x] 引入中英双语 PCMP 核心规范原版并校验结构对称；
-- [x] 建立 `AGENTS.md` 并遵循 STC 规范，定义项目定位、关键索引与红线禁区；
-- [x] 建立 `.gitignore` 排除敏感配置文件、状态文件、临时会话与 PCMP 派生缓存；
-- [x] 补全 `config.example.json` 与 `.env.example` 配置示例文件；
-- [x] 构建完整的 `ai/` 上下文真源文件，登记首批 3 项已确认 ADR（DEC-001、DEC-002、DEC-003）；
-- [x] 运行 `python3 scripts/pcmp_index.py --rebuild` 成功生成 SQLite 派生索引；
-- [x] 运行 `python3 scripts/pcmp_index.py --check` 自动化合规检查 0 错误 0 警告；
-- [x] 运行 `python3 -m unittest discover tests` 单元测试全部通过。
+- [x] **独立条目判定与自动填充选项多 URI 规范化**：
+  - 项目名称规范化去除空白与小写，与账号组合判定；
+  - 登录项 `uris` 数组自动规范化并按字典序排序，杜绝顺序不一致引发的假哈希差异；
+- [x] **哈希优先 1-to-1 精确配对**：
+  - 面对多重同名条目，优先建立密码与填充选项完全一致的配对；
+  - 真实数据实测：`iforgot.apple.com`、`login.live.com`、`www.qianglie.com` 全部 1-to-1 配对成功；
+- [x] **回收站联动感知与防复活墓碑**：
+  - 对端回收站中的条目被精准识别为单边删除，沉淀墓碑，绝不误复活；
+  - 真实数据实测：`xn--2os8j.us.ci` 正确识别为在 Vaultwarden 端已删除并记入墓碑；
+  - 真实生产库比对中，**4 组歧义重名彻底清零（0 歧义）**；
+- [x] **条目计数全链路排除回收站**：
+  - NodeWarden 真实活动条目：326 条（排除 25 条回收站）；
+  - Vaultwarden 真实活动条目：325 条（排除 26 条回收站）；
+- [x] 运行 `python3 bw_sync.py --selftest`，12 组场景离线自测全部 PASS；
+- [x] 运行 `python3 -m unittest discover tests`，31 项单元测试全部 PASS；
+- [x] 运行 `python3 scripts/pcmp_index.py --check`，0 错误 0 警告。
 
 ## 即时动作 (Immediate Next Action)
-- 向人类开发者提交初始化完成报告，等待确认 Git 提交。
+- 向人类开发者提交 STC 规范交付回执。
 
