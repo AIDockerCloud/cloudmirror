@@ -31,6 +31,7 @@ import getpass
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1047,6 +1048,26 @@ def load_json(path, default=None):
     return json.loads(p.read_text(encoding="utf-8"))
 
 
+def get_pair_key(side_a, side_b):
+    ca = re.sub(r"[^a-zA-Z0-9_\-]", "", str(side_a)).strip()
+    cb = re.sub(r"[^a-zA-Z0-9_\-]", "", str(side_b)).strip()
+    return "__".join(sorted([ca, cb]))
+
+
+def resolve_pair_state_file(base_dir, side_a, side_b, custom_state_arg=None):
+    if custom_state_arg and Path(custom_state_arg).name != "bw-sync-state.json":
+        return Path(custom_state_arg)
+    pair_slug = get_pair_key(side_a, side_b)
+    target = Path(base_dir) / f"bw-sync-state-{pair_slug}.json"
+    legacy = Path(base_dir) / "bw-sync-state.json"
+    if not target.exists() and legacy.exists():
+        try:
+            shutil.copyfile(legacy, target)
+        except Exception:
+            pass
+    return target
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="多端 Bitwarden / Vaultwarden 双向同步")
     ap.add_argument("--config", default=str(Path(__file__).with_name("config.json")))
@@ -1101,7 +1122,10 @@ def main(argv=None):
               "或在 config.json 里用 \"bw\" 写 bw.exe 的完整路径。", file=sys.stderr)
         return 2
 
-    state = load_json(args.state, empty_state())
+    target_state_path = resolve_pair_state_file(
+        Path(__file__).parent, side_a_key, side_b_key, args.state
+    )
+    state = load_json(target_state_path, empty_state())
     today = datetime.now().strftime("%Y-%m-%d")
     keys = [side_a_key, side_b_key]
     clients = {}
@@ -1122,11 +1146,11 @@ def main(argv=None):
     # plan_sync 用的是客户端 label，这里报告已在 run_one_round 内生成好文本所需数据
     print(render_report(report, label_a, label_b, args.apply))
     if args.apply:
-        tmp = Path(args.state).with_suffix(".tmp")
+        tmp = target_state_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(new_state, ensure_ascii=False, indent=1),
                        encoding="utf-8")
-        tmp.replace(args.state)
-        print(f"state 已保存：{args.state}")
+        tmp.replace(target_state_path)
+        print(f"state 已保存：{target_state_path}")
     else:
         print("（只读模式：没有写入任何数据，state 未更新。确认无误后加 --apply 执行。）")
     return 0

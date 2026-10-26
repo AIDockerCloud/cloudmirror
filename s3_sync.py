@@ -200,7 +200,7 @@ class S3SourceManager:
         return [
             {
                 "id": "s3-obsidian-r2",
-                "name": "Obsidian 主笔记库 (Cloudflare R2)",
+                "name": "Obsidian 主笔记库 (Cloudflare R2) [DEMO]",
                 "provider": "Cloudflare R2",
                 "endpoint": "https://a1b2c3d4e5.r2.cloudflarestorage.com",
                 "region": "auto",
@@ -209,15 +209,15 @@ class S3SourceManager:
                 "access_key": "248a8f902b934c890123",
                 "secret_key": "••••••••••••••••••••••••••••••••",
                 "tags": ["Obsidian"],
-                "status": "connected",
+                "status": "demo",
                 "objects_count": 1842,
                 "total_size_mb": 348.6,
-                "last_sync": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "last_sync": "未同步 (DEMO演示)",
                 "ssl": True,
             },
             {
                 "id": "s3-obsidian-bitiful",
-                "name": "Obsidian 异地备库 (缤纷云 Bitiful)",
+                "name": "Obsidian 异地备库 (缤纷云 Bitiful) [DEMO]",
                 "provider": "缤纷云 (Bitiful)",
                 "endpoint": "https://s3.bitiful.net",
                 "region": "cn-east-1",
@@ -226,15 +226,15 @@ class S3SourceManager:
                 "access_key": "btf_ak_981240182",
                 "secret_key": "••••••••••••••••••••••••••••••••",
                 "tags": ["Obsidian"],
-                "status": "connected",
+                "status": "demo",
                 "objects_count": 1838,
                 "total_size_mb": 346.2,
-                "last_sync": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "last_sync": "未同步 (DEMO演示)",
                 "ssl": True,
             },
             {
                 "id": "s3-joplin-minio",
-                "name": "Joplin 私有NAS主库 (MinIO)",
+                "name": "Joplin 私有NAS主库 (MinIO) [DEMO]",
                 "provider": "MinIO",
                 "endpoint": "http://192.168.1.120:9000",
                 "region": "us-east-1",
@@ -243,15 +243,15 @@ class S3SourceManager:
                 "access_key": "minio_admin_user",
                 "secret_key": "••••••••••••••••••••••••••••••••",
                 "tags": ["Joplin"],
-                "status": "connected",
+                "status": "demo",
                 "objects_count": 3290,
                 "total_size_mb": 912.4,
-                "last_sync": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "last_sync": "未同步 (DEMO演示)",
                 "ssl": False,
             },
             {
                 "id": "s3-joplin-bitiful",
-                "name": "Joplin 云端冷备桶 (缤纷云 Bitiful)",
+                "name": "Joplin 云端冷备桶 (缤纷云 Bitiful) [DEMO]",
                 "provider": "缤纷云 (Bitiful)",
                 "endpoint": "https://s3.bitiful.net",
                 "region": "cn-east-1",
@@ -260,15 +260,15 @@ class S3SourceManager:
                 "access_key": "btf_ak_981240182",
                 "secret_key": "••••••••••••••••••••••••••••••••",
                 "tags": ["Joplin"],
-                "status": "connected",
+                "status": "demo",
                 "objects_count": 3285,
                 "total_size_mb": 910.1,
-                "last_sync": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "last_sync": "未同步 (DEMO演示)",
                 "ssl": True,
             },
             {
                 "id": "s3-logseq-aws",
-                "name": "Logseq 异地容灾冷备 (AWS S3)",
+                "name": "Logseq 异地容灾冷备 (AWS S3) [DEMO]",
                 "provider": "AWS S3",
                 "endpoint": "https://s3.ap-northeast-1.amazonaws.com",
                 "region": "ap-northeast-1",
@@ -277,15 +277,15 @@ class S3SourceManager:
                 "access_key": "AKIA2EXAMPLEKEY999",
                 "secret_key": "••••••••••••••••••••••••••••••••",
                 "tags": ["Logseq"],
-                "status": "connected",
+                "status": "demo",
                 "objects_count": 765,
                 "total_size_mb": 154.2,
-                "last_sync": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "last_sync": "未同步 (DEMO演示)",
                 "ssl": True,
             },
             {
                 "id": "s3-siyuan-cos",
-                "name": "思源笔记多端块存储 (腾讯云 COS)",
+                "name": "思源笔记多端块存储 (腾讯云 COS) [DEMO]",
                 "provider": "Tencent COS",
                 "endpoint": "https://cos.ap-guangzhou.myqcloud.com",
                 "region": "ap-guangzhou",
@@ -294,10 +294,10 @@ class S3SourceManager:
                 "access_key": "AKID9examplecoskey01",
                 "secret_key": "••••••••••••••••••••••••••••••••",
                 "tags": ["思源笔记"],
-                "status": "connected",
+                "status": "demo",
                 "objects_count": 4890,
                 "total_size_mb": 1420.0,
-                "last_sync": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "last_sync": "未同步 (DEMO演示)",
                 "ssl": True,
             },
         ]
@@ -414,15 +414,16 @@ class S3SourceManager:
     def test_connection(self, source_id: str) -> Dict[str, Any]:
         src = self.get_source(source_id)
         if not src:
-            return {"success": False, "message": f"未找到 S3 数据源 {source_id}"}
+            return {"success": False, "is_demo": True, "message": f"未找到 S3 数据源 {source_id}"}
         endpoint = src.get("endpoint", "")
         bucket = src.get("bucket", "")
         if not endpoint or not bucket:
-            return {"success": False, "message": "Endpoint 或 Bucket 为空"}
+            return {"success": False, "is_demo": True, "message": "Endpoint 或 Bucket 为空"}
         return {
             "success": True,
+            "is_demo": True,
             "latency_ms": 36,
-            "message": f"成功与 [{src.get('name')}] 握手！存储桶 [{bucket}] 读写权限正常 (Region: {src.get('region')})",
+            "message": f"【DEMO 演示模式】已模拟连通响应（注意：当前 S3 模块处于原型演示阶段，底层尚未发起真实 SigV4 请求，未校验真实网络权限）",
             "bucket_info": {
                 "name": bucket,
                 "objects": src.get("objects_count", 1024),
@@ -432,11 +433,11 @@ class S3SourceManager:
         }
 
     def compare_pair(self, primary_id: str, backup_id: str, tag: str = "") -> Dict[str, Any]:
-        """同标签下对主桶与备桶进行数据差异比对 (Dry-Run)"""
+        """同标签下对主桶与备桶进行数据差异比对 (Dry-Run DEMO)"""
         pri = self.get_source(primary_id)
         bak = self.get_source(backup_id)
         if not pri or not bak:
-            return {"success": False, "message": "主桶或备桶不存在"}
+            return {"success": False, "is_demo": True, "message": "主桶或备桶不存在"}
 
         # 模拟比对条目差异（生产中可执行 S3 list-objects 遍历与 ETag/SHA-256 比对）
         pri_count = pri.get("objects_count", 1842)
@@ -447,6 +448,8 @@ class S3SourceManager:
 
         mock_diff = {
             "success": True,
+            "is_demo": True,
+            "demo_warning": "⚠️ 警告：当前 S3 差异对比处于 DEMO 演算模式，未遍历真实远程 S3 存储桶！",
             "tag": tag or (pri.get("tags", ["未命名"])[0]),
             "primary": {"id": pri["id"], "name": pri["name"], "bucket": pri["bucket"], "objects_count": pri_count},
             "backup": {"id": bak["id"], "name": bak["name"], "bucket": bak["bucket"], "objects_count": bak_count},
@@ -455,17 +458,17 @@ class S3SourceManager:
             "conflict_count": 0,
             "tombstone_count": 0,
             "sample_pending_files": [
-                f"{pri.get('prefix', '')}2026/10/今日工作日志.md (新增待同步)",
-                f"{pri.get('prefix', '')}assets/架构拓扑图-v2.png (增量资产)",
-                f"{pri.get('prefix', '')}kanban/项目迭代进度.md (主桶已更新)",
-                f"{pri.get('prefix', '')}templates/周报模板.md (待补齐到备桶)",
+                f"{pri.get('prefix', '')}2026/10/今日工作日志.md (新增待同步·演示)",
+                f"{pri.get('prefix', '')}assets/架构拓扑图-v2.png (增量资产·演示)",
+                f"{pri.get('prefix', '')}kanban/项目迭代进度.md (主桶已更新·演示)",
+                f"{pri.get('prefix', '')}templates/周报模板.md (待补齐到备桶·演示)",
             ][:diff_count],
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         return mock_diff
 
     def sync_pair(self, primary_id: str, backup_id: str, tag: str = "", apply: bool = True, strategy: str = "safe_add_only") -> Dict[str, Any]:
-        """从主桶向备桶执行数据同步（只增不改不删）"""
+        """从主桶向备桶执行数据同步（DEMO 演示模式）"""
         comp = self.compare_pair(primary_id, backup_id, tag)
         if not comp.get("success"):
             return comp
@@ -475,31 +478,33 @@ class S3SourceManager:
         to_sync = comp["to_sync_count"]
 
         logs = [
-            f"[{datetime.now().strftime('%H:%M:%S')}] 启动同标签主备桶同步 (标签: {comp['tag']})",
+            f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️【DEMO 演示模式警告】当前 S3 模块处于原型演示阶段，未建立真实网络连接，未同步任何实际远端对象！严禁视作真实备份依据！",
+            f"[{datetime.now().strftime('%H:%M:%S')}] 启动同标签主备桶演示同步 (标签: {comp['tag']})",
             f"[{datetime.now().strftime('%H:%M:%S')}] 主桶 (Source): {pri['name']} ({pri['bucket']})",
             f"[{datetime.now().strftime('%H:%M:%S')}] 备桶 (Target): {bak['name']} ({bak['bucket']})",
-            f"[{datetime.now().strftime('%H:%M:%S')}] 策略: {strategy} (严格只增不改不删)",
-            f"[{datetime.now().strftime('%H:%M:%S')}] 扫描对象: 相同对象 {comp['identical_count']} 个，待同步增量 {to_sync} 个",
+            f"[{datetime.now().strftime('%H:%M:%S')}] 策略: {strategy} (演示模式严格只增不改不删)",
+            f"[{datetime.now().strftime('%H:%M:%S')}] 模拟扫描对象: 相同对象 {comp['identical_count']} 个，待同步增量 {to_sync} 个",
         ]
 
         if apply:
             for f in comp["sample_pending_files"]:
-                logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] -> 写入备桶: {f}")
-            logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ 主备桶数据同步完成！已成功写入 {to_sync} 项笔记数据至备桶。")
+                logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] -> 模拟写入备桶: {f}")
+            logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ℹ️ [DEMO 演算完成] 模拟写入流程已结束（未发生实际远程对象传输）。")
 
             # 更新数据源状态
             for s in self._sources:
                 if s["id"] == backup_id:
                     s["objects_count"] = pri["objects_count"]
-                    s["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    s["last_sync"] = "未同步 (DEMO演示)"
                 elif s["id"] == primary_id:
-                    s["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    s["last_sync"] = "未同步 (DEMO演示)"
             self.save()
         else:
-            logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] （只读预览模式，未写入任何数据）")
+            logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] （DEMO 只读演算预览模式，未发生任何写入）")
 
         return {
             "success": True,
+            "is_demo": True,
             "mode": "apply" if apply else "dry-run",
             "tag": comp["tag"],
             "primary": pri,

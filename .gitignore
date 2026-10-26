@@ -5,8 +5,8 @@ config.test.json
 !config.example.json
 !config.dev.json
 .env
-bw-sync-state.json
-bw-sync-state.json.tmp
+bw-sync-state*.json
+bw-sync-state*.json.tmp
 bw-node/
 bw-vault/
 bw-*/

@@ -406,6 +406,20 @@ scheduler_thread.start()
 # ==================== Bitwarden 异步后台同步任务管理器 ====================
 SYNC_JOBS_LOCK = threading.Lock()
 SYNC_JOBS: Dict[str, Dict[str, Any]] = {}
+ACTIVE_SYNC_PAIRS_LOCK = threading.Lock()
+ACTIVE_SYNC_PAIRS = set()
+
+
+def get_pair_key_for_sources(src_a: Dict[str, Any], src_b: Dict[str, Any]) -> str:
+    key_a = src_a.get("appdata_dir") or src_a.get("id", "node").replace("bw-", "")
+    key_b = src_b.get("appdata_dir") or src_b.get("id", "vault").replace("bw-", "")
+    return bw_sync.get_pair_key(key_a, key_b)
+
+
+def get_state_file_for_pair(src_a: Dict[str, Any], src_b: Dict[str, Any]) -> Path:
+    key_a = src_a.get("appdata_dir") or src_a.get("id", "node").replace("bw-", "")
+    key_b = src_b.get("appdata_dir") or src_b.get("id", "vault").replace("bw-", "")
+    return bw_sync.resolve_pair_state_file(BASE_DIR, key_a, key_b)
 
 
 def execute_bw_sync_operation(src_a: Dict[str, Any], src_b: Dict[str, Any], apply_mode: bool, update_progress_fn=None) -> Dict[str, Any]:
@@ -466,7 +480,8 @@ def execute_bw_sync_operation(src_a: Dict[str, Any], src_b: Dict[str, Any], appl
         try:
             clients[key_a] = bw_sync.RealBwClient(key_a, cfg_a, bw_path, BASE_DIR)
             clients[key_b] = bw_sync.RealBwClient(key_b, cfg_b, bw_path, BASE_DIR)
-            state = bw_sync.load_json(STATE_FILE, bw_sync.empty_state())
+            pair_state_file = get_state_file_for_pair(src_a, src_b)
+            state = bw_sync.load_json(pair_state_file, bw_sync.empty_state())
             if update_progress_fn:
                 update_progress_fn("已导出条目并提取自然键哈希，正在执行双向比对与增量分析...")
             report, new_state = bw_sync.run_one_round(
@@ -475,9 +490,9 @@ def execute_bw_sync_operation(src_a: Dict[str, Any], src_b: Dict[str, Any], appl
             if apply_mode:
                 if update_progress_fn:
                     update_progress_fn("正在更新同步基线并重新拉取两端最新条目...")
-                tmp = STATE_FILE.with_suffix(".tmp")
+                tmp = pair_state_file.with_suffix(".tmp")
                 tmp.write_text(json.dumps(new_state, ensure_ascii=False, indent=1), encoding="utf-8")
-                tmp.replace(STATE_FILE)
+                tmp.replace(pair_state_file)
                 try:
                     items_a, folders_a = clients[key_a].pull()
                     items_b, folders_b = clients[key_b].pull()
@@ -565,7 +580,7 @@ def execute_bw_sync_operation(src_a: Dict[str, Any], src_b: Dict[str, Any], appl
     }
 
 
-def run_bitwarden_sync_job(job_id: str, source_a_id: str, source_b_id: str, apply_mode: bool):
+def run_bitwarden_sync_job(job_id: str, source_a_id: str, source_b_id: str, apply_mode: bool, pair_key: str = ""):
     def update_prog(msg: str):
         with SYNC_JOBS_LOCK:
             job = SYNC_JOBS.get(job_id)
@@ -614,6 +629,10 @@ def run_bitwarden_sync_job(job_id: str, source_a_id: str, source_b_id: str, appl
                     "progress_message": f"同步执行异常: {str(e)}",
                     "rendered_text": f"[执行异常] {str(e)}",
                 })
+    finally:
+        if pair_key:
+            with ACTIVE_SYNC_PAIRS_LOCK:
+                ACTIVE_SYNC_PAIRS.discard(pair_key)
 
 
 class CloudMirrorHandler(BaseHTTPRequestHandler):
@@ -676,7 +695,18 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
     def handle_api_get(self, path: str, query: Dict[str, List[str]]):
         if path == "/api/status":
             bw_bin = shutil.which("bw") or shutil.which("bw.exe")
-            state_data = bw_sync.load_json(STATE_FILE, bw_sync.empty_state())
+            total_pairs = 0
+            total_tombstones = 0
+            candidate_files = list(BASE_DIR.glob("bw-sync-state*.json"))
+            if not candidate_files and STATE_FILE.exists():
+                candidate_files = [STATE_FILE]
+            for sf in candidate_files:
+                if sf.name.endswith(".tmp"):
+                    continue
+                sd = bw_sync.load_json(sf, bw_sync.empty_state())
+                total_pairs += len(sd.get("pairs", {}))
+                total_tombstones += len(sd.get("tombstones", {}))
+
             self.send_json({
                 "app": "CloudMirror",
                 "version": "1.3.0",
@@ -688,8 +718,8 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
                 "s3_sources_count": len(s3_manager._sources),
                 "s3_tags_count": len(tag_manager._tags),
                 "schedules_count": len(schedule_manager._schedules),
-                "state_pairs_count": len(state_data.get("pairs", {})),
-                "tombstones_count": len(state_data.get("tombstones", {})),
+                "state_pairs_count": total_pairs,
+                "tombstones_count": total_tombstones,
                 "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             })
         elif path == "/api/bitwarden/sources":
@@ -698,7 +728,21 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
                 "sources": datastore.list_bw_sources()
             })
         elif path == "/api/bitwarden/state":
-            state_data = bw_sync.load_json(STATE_FILE, bw_sync.empty_state())
+            src_a_id = query.get("source_a", [""])[0]
+            src_b_id = query.get("source_b", [""])[0]
+            target_file = None
+            if src_a_id and src_b_id:
+                src_a = next((s for s in datastore.bw_sources if s["id"] == src_a_id), None)
+                src_b = next((s for s in datastore.bw_sources if s["id"] == src_b_id), None)
+                if src_a and src_b:
+                    target_file = get_state_file_for_pair(src_a, src_b)
+            if not target_file or not target_file.exists():
+                pair_files = [f for f in BASE_DIR.glob("bw-sync-state-*.json") if not f.name.endswith(".tmp")]
+                if pair_files:
+                    target_file = pair_files[0]
+                else:
+                    target_file = STATE_FILE
+            state_data = bw_sync.load_json(target_file, bw_sync.empty_state())
             self.send_json({
                 "success": True,
                 "state": state_data
@@ -943,6 +987,17 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
 
             label_a = src_a.get("name", "来源A")
             label_b = src_b.get("name", "来源B")
+            pair_key = get_pair_key_for_sources(src_a, src_b)
+
+            with ACTIVE_SYNC_PAIRS_LOCK:
+                if pair_key in ACTIVE_SYNC_PAIRS:
+                    self.send_json({
+                        "success": False,
+                        "error": "conflict",
+                        "message": f"配对节点 [{label_a}] 与 [{label_b}] 当前已有正在执行的同步任务，请勿重复触发！"
+                    }, status=409)
+                    return
+                ACTIVE_SYNC_PAIRS.add(pair_key)
 
             if async_mode:
                 job_id = f"bw-sync-{int(time.time())}-{random.randint(1000, 9999)}"
@@ -965,7 +1020,7 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
 
                 t = threading.Thread(
                     target=run_bitwarden_sync_job,
-                    args=(job_id, source_a_id, source_b_id, apply_mode),
+                    args=(job_id, source_a_id, source_b_id, apply_mode, pair_key),
                     daemon=True
                 )
                 t.start()
@@ -994,6 +1049,9 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
                     "message": f"同步执行异常: {str(e)}",
                     "rendered_text": f"[执行异常] {str(e)}",
                 }, status=500)
+            finally:
+                with ACTIVE_SYNC_PAIRS_LOCK:
+                    ACTIVE_SYNC_PAIRS.discard(pair_key)
 
         # ---------------- Bitwarden 单端重复数据扫描与清理 ----------------
         elif path == "/api/bitwarden/duplicates/scan":

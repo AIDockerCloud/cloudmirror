@@ -1332,6 +1332,7 @@ function renderS3Sources() {
           <div>
             <div class="source-name">${escapeHTML(src.name)}</div>
             <div style="margin-top:4px; display:flex; flex-wrap:wrap; gap:4px; align-items:center;">
+              <span class="badge" style="background:rgba(234,179,8,0.15); color:#facc15; border-color:rgba(234,179,8,0.3);">DEMO</span>
               ${providerBadge}
               ${tagPills}
             </div>
@@ -1377,8 +1378,8 @@ function renderS3Sources() {
 
       <div class="source-card-footer">
         <div class="source-status">
-          <span class="pulse-dot"></span>
-          <span>${src.objects_count != null ? src.objects_count : 0} 个笔记文件 (${src.total_size_mb != null ? src.total_size_mb : 0} MB)</span>
+          <span class="pulse-dot" style="${src.status === 'demo' ? 'background:#eab308; box-shadow:0 0 8px #eab308;' : ''}"></span>
+          <span>${src.status === 'demo' ? '[DEMO演示] ' : ''}${src.objects_count != null ? src.objects_count : 0} 个笔记文件 (${src.total_size_mb != null ? src.total_size_mb : 0} MB)</span>
         </div>
         <div style="display:flex; gap:6px;">
           <button class="btn btn-secondary btn-sm" id="btn-copy-s3-${src.id}" title="复制此存储桶配置以快速创建新源">复制</button>
@@ -1536,10 +1537,14 @@ async function testS3Source(id, showToastMsg = true) {
     });
     const data = await res.json();
     if (data.success && showToastMsg) {
-      showToast(`⚡ ${data.message} (${data.latency_ms}ms)`, 'success');
+      if (data.is_demo) {
+        showToast(`⚠️ ${data.message}`, 'warning');
+      } else {
+        showToast(`⚡ ${data.message} (${data.latency_ms}ms)`, 'success');
+      }
     }
   } catch (err) {
-    showToast('S3 连接失败，请检查 Endpoint 或密钥配置', 'error');
+    showToast('S3 连接测试异常', 'error');
   }
 }
 

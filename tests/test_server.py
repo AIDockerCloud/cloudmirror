@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from server import CloudMirrorHandler, datastore, s3_manager
+import bw_sync
 
 
 class TestServerAPI(unittest.TestCase):
@@ -504,6 +505,56 @@ class TestServerAPI(unittest.TestCase):
             data_clean = json.loads(resp.read().decode("utf-8"))
             self.assertTrue(data_clean.get("success"))
             self.assertEqual(data_clean.get("cleaned_count"), len(dup_ids))
+
+
+    def test_bitwarden_sync_concurrency_lock_409(self):
+        """API /api/bitwarden/sync rejects duplicate concurrent execution with HTTP 409."""
+        from server import ACTIVE_SYNC_PAIRS_LOCK, ACTIVE_SYNC_PAIRS, get_pair_key_for_sources
+        sources = datastore.list_bw_sources()
+        self.assertGreaterEqual(len(sources), 2)
+        pair_key = get_pair_key_for_sources(sources[0], sources[1])
+
+        # Manually lock the pair
+        with ACTIVE_SYNC_PAIRS_LOCK:
+            ACTIVE_SYNC_PAIRS.add(pair_key)
+
+        try:
+            payload = json.dumps({
+                "source_a": sources[0]["id"],
+                "source_b": sources[1]["id"],
+                "apply": False
+            }).encode("utf-8")
+            req = urllib.request.Request(self._url("/api/bitwarden/sync"), data=payload, headers={"Content-Type": "application/json"})
+            try:
+                urllib.request.urlopen(req)
+                self.fail("Expected HTTP 409 Conflict, but request succeeded")
+            except urllib.error.HTTPError as e:
+                self.assertEqual(e.code, 409)
+                body = json.loads(e.read().decode("utf-8"))
+                self.assertFalse(body.get("success"))
+                self.assertEqual(body.get("error"), "conflict")
+                self.assertIn("已有正在执行的同步任务", body.get("message", ""))
+        finally:
+            with ACTIVE_SYNC_PAIRS_LOCK:
+                ACTIVE_SYNC_PAIRS.discard(pair_key)
+
+    def test_pair_state_isolation_and_inheritance(self):
+        """Test resolve_pair_state_file isolates state per pair and smoothly inherits baseline."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            legacy = tmp_path / "bw-sync-state.json"
+            legacy.write_text(json.dumps({"pairs": {"a1": "b1"}, "tombstones": {}}), encoding="utf-8")
+
+            # Resolve state for pair (node, vault)
+            pair_file = bw_sync.resolve_pair_state_file(tmp_path, "node", "vault")
+            expected_name = f"bw-sync-state-{bw_sync.get_pair_key('node', 'vault')}.json"
+            self.assertEqual(pair_file.name, expected_name)
+            self.assertTrue(pair_file.exists())
+
+            # Verify baseline was inherited
+            data = json.loads(pair_file.read_text(encoding="utf-8"))
+            self.assertEqual(data.get("pairs", {}).get("a1"), "b1")
 
 
 if __name__ == "__main__":

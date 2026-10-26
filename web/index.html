@@ -44,7 +44,7 @@
         <a class="nav-item" data-tab="s3" id="nav-s3">
           <span class="nav-icon">🪣</span>
           <span>S3 笔记对象存储</span>
-          <span class="nav-badge" id="nav-s3-badge">4</span>
+          <span class="nav-badge" id="nav-s3-badge" style="background:rgba(234,179,8,0.2); color:#facc15; border:1px solid rgba(234,179,8,0.4);">DEMO</span>
         </a>
 
         <div class="nav-section-title">同步与安全运维</div>
@@ -236,6 +236,14 @@
 
         <!-- ==================== TAB 3: S3 笔记对象存储 ==================== -->
         <section class="tab-view" id="view-s3">
+          <!-- DEMO Prototype Warning Callout -->
+          <div style="background:rgba(234, 179, 8, 0.12); border:1px solid rgba(234, 179, 8, 0.35); border-radius:var(--radius-md); padding:12px 18px; margin-bottom:16px; display:flex; align-items:center; gap:12px;">
+            <span style="font-size:1.4rem;">⚠️</span>
+            <div style="font-size:0.84rem; color:#fef08a; line-height:1.5;">
+              <strong>【S3 模块原型演示模式】</strong> 当前 S3 笔记对象存储模块处于界面交互与逻辑原型阶段（Mock 演算，尚未建立真实 AWS SigV4 网络调用）。展示的存储桶与同步数据仅供演练，<strong>请勿作为真实数据备份依据</strong>！
+            </div>
+          </div>
+
           <div class="toolbar-container">
             <!-- Tag Filter Chips for Note Apps -->
             <div class="tag-chips-container" id="s3-tag-filters">
@@ -353,9 +361,12 @@
           <!-- SUBPANEL 2: S3 笔记同标签主备同步 (同级集成) -->
           <div class="sync-panel-content" id="sync-panel-s3-pair">
             <div class="pair-sync-panel">
+              <div style="background:rgba(234, 179, 8, 0.1); border:1px solid rgba(234, 179, 8, 0.3); border-radius:var(--radius-sm); padding:8px 12px; margin-bottom:12px; font-size:0.8rem; color:#fef08a;">
+                ⚠️ <strong>DEMO 演示模式</strong>：此比对与同步为本地演算模拟，未产生真实 S3 远端读写流量。
+              </div>
               <div class="topology-header" style="margin-bottom:12px;">
                 <h3><span>🔄</span> S3 笔记同标签主备同步 (对标 Bitwarden 模式)</h3>
-                <span class="badge badge-node">严格只增不改不删</span>
+                <span class="badge" style="background:rgba(234,179,8,0.2); color:#facc15; border-color:rgba(234,179,8,0.4);">DEMO 原型演练</span>
               </div>
               <p style="font-size:0.82rem; color:var(--text-muted); margin-bottom:16px;">
                 针对相同笔记标签（如 Obsidian、Joplin、思源笔记），在主桶与备桶间比对差异并单向增量同步。
