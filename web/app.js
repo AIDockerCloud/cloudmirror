@@ -492,6 +492,11 @@ function updateBwPasswordHint() {
   if (!hintEl || !inputEl) return;
 
   const currentVal = inputEl.value.trim();
+  if (currentVal && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(currentVal)) {
+    hintEl.className = 'password-lifecycle-hint status-changed';
+    hintEl.innerHTML = `<span style="color:#ef4444; font-weight:600;">⚠️ 警告：当前输入格式不合法（包含特殊字符），这看起来是密码明文！请填写环境变量名（如 BW_SYNC_NODE_PASSWORD），真实密码请配置在 .env 文件中。</span>`;
+    return;
+  }
   if (!editId) {
     hintEl.className = 'password-lifecycle-hint status-new';
     hintEl.innerHTML = `<span>✨ 新增凭据：保存后将从今日起开启 90 天安全生命周期计时</span>`;
@@ -504,10 +509,10 @@ function updateBwPasswordHint() {
 
   if (currentVal === origPw) {
     hintEl.className = 'password-lifecycle-hint status-unchanged';
-    hintEl.innerHTML = `<span>🔒 密码未修改：保留原使用时长（已使用 <strong>${lifecycle.days}</strong> 天 · 上次更新 ${lifecycle.lastModifiedDate}），不误判重置</span>`;
+    hintEl.innerHTML = `<span>🔒 凭据未修改：保留原使用时长（已使用 <strong>${lifecycle.days}</strong> 天 · 上次更新 ${lifecycle.lastModifiedDate}），不误判重置</span>`;
   } else {
     hintEl.className = 'password-lifecycle-hint status-changed';
-    hintEl.innerHTML = `<span>🔄 检测到密码已变动：保存后将重置生命周期为 <strong>0</strong> 天 (健康状态，绿色)</span>`;
+    hintEl.innerHTML = `<span>🔄 检测到凭据变量变动：保存后将重置生命周期为 <strong>0</strong> 天 (健康状态，绿色)</span>`;
   }
 }
 
@@ -762,6 +767,10 @@ function initBitwardenEvents() {
     e.preventDefault();
     const editId = document.getElementById('bw-input-id')?.value.trim();
     const pwVal = document.getElementById('bw-input-pw-env').value.trim();
+    if (pwVal && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(pwVal)) {
+      showToast('⚠️ 格式错误：请填写合法的环境变量名（如 BW_SYNC_NODE_PASSWORD），真实密码请配置在 .env 文件中，严禁直接输入明文密码！', 'error');
+      return;
+    }
     const payload = {
       type: document.getElementById('bw-input-type').value,
       name: document.getElementById('bw-input-name').value.trim(),

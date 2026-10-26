@@ -4,7 +4,9 @@ Unit test wrapper for bw_sync offline selftest suite.
 Ensures python3 -m unittest discover tests validates core sync logic alongside PCMP.
 """
 
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -40,21 +42,53 @@ class TestBwSync(unittest.TestCase):
         self.assertEqual(len(cb.items), count_b_1, "Conflict copies must not duplicate on B")
 
     def test_password_once_does_not_treat_config_as_plaintext(self):
-        """RealBwClient._password_once must never treat config value as plaintext password."""
+        """RealBwClient._password_once must never treat config value as plaintext password or leak invalid strings."""
         import os
         from unittest.mock import patch
-        cfg = {
+        # 1. Valid env name format missing in env
+        cfg_valid = {
             "label": "TestNode",
             "server": "https://example.com",
             "email": "test@example.com",
-            "password_env": "PlaintextPasswordNotInEnv123",
+            "password_env": "BW_SYNC_TEST_VALID_ENV_NAME_123"
         }
-        # Ensure not in env
-        os.environ.pop("PlaintextPasswordNotInEnv123", None)
-        client = bw_sync.RealBwClient("test", cfg, "/bin/bw", REPO_ROOT)
+        os.environ.pop("BW_SYNC_TEST_VALID_ENV_NAME_123", None)
+        client_valid = bw_sync.RealBwClient("test", cfg_valid, "/bin/bw", REPO_ROOT)
         with patch.object(sys.stdin, "isatty", return_value=False):
-            with self.assertRaises(bw_sync.BwError):
-                client._password_once()
+            with self.assertRaises(bw_sync.BwError) as cm:
+                client_valid._password_once()
+            self.assertIn("BW_SYNC_TEST_VALID_ENV_NAME_123", str(cm.exception))
+
+        # 2. Invalid env name format (e.g. user inadvertently provided raw plaintext password with symbols)
+        secret_raw_pw = "&Secret*Pw]999|^"
+        cfg_invalid = {
+            "label": "TestNode",
+            "server": "https://example.com",
+            "email": "test@example.com",
+            "password_env": secret_raw_pw
+        }
+        client_invalid = bw_sync.RealBwClient("test", cfg_invalid, "/bin/bw", REPO_ROOT)
+        with patch.object(sys.stdin, "isatty", return_value=False):
+            with self.assertRaises(bw_sync.BwError) as cm:
+                client_invalid._password_once()
+            # MUST NOT echo the raw password/string under any circumstances!
+            self.assertNotIn(secret_raw_pw, str(cm.exception), "Plaintext password must NEVER be reflected in error message")
+            self.assertIn("BW_SYNC_PASSWORD", str(cm.exception))
+
+    def test_load_dotenv_support(self):
+        """Native load_dotenv loads .env variables without external dependencies."""
+        with tempfile.NamedTemporaryFile("w+", encoding="utf-8", delete=False) as tf:
+            tf.write("# Comment\nBW_SYNC_DOTENV_TEST_VAR=my_test_val_888\n")
+            tf.flush()
+            tpath = Path(tf.name)
+        try:
+            os.environ.pop("BW_SYNC_DOTENV_TEST_VAR", None)
+            bw_sync.load_dotenv(tpath)
+            self.assertEqual(os.environ.get("BW_SYNC_DOTENV_TEST_VAR"), "my_test_val_888")
+        finally:
+            os.environ.pop("BW_SYNC_DOTENV_TEST_VAR", None)
+            if tpath.exists():
+                tpath.unlink()
 
 
     def test_duplicates_isolated_by_folder(self):

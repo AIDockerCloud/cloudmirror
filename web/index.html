@@ -761,11 +761,11 @@
           </div>
 
           <div class="form-group">
-            <label class="form-label" for="bw-input-pw-env">主密码 / 密码环境变量 (Password / Env)</label>
+            <label class="form-label" for="bw-input-pw-env">主密码环境变量名 (Password Env Name) *</label>
             <div style="display:flex; gap:6px; align-items:center;">
-              <input type="password" class="form-input" id="bw-input-pw-env" placeholder="例如：BW_SYNC_NODE_PASSWORD 或直接输入密码" style="flex:1;">
-              <button type="button" class="btn btn-secondary btn-sm" id="btn-toggle-modal-bw-pw" title="显示/隐藏密码为*" style="padding:7px 11px; font-size:0.92rem;">👁️</button>
+              <input type="text" class="form-input" id="bw-input-pw-env" placeholder="例如：BW_SYNC_NODE_PASSWORD" style="flex:1; font-family:var(--font-mono);">
             </div>
+            <span class="form-help" style="color:var(--text-muted); font-size:0.75rem; margin-top:4px; display:block;">🔒 安全规范：严禁在此填写密码明文。请填写环境变量名（如 <code>BW_SYNC_NODE_PASSWORD</code>），真实密码请配置在项目的 <code>.env</code> 文件中。</span>
             <div id="bw-pw-lifecycle-hint" class="password-lifecycle-hint" style="margin-top:6px;"></div>
           </div>
 

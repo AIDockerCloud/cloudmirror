@@ -51,6 +51,30 @@ class BwError(Exception):
     pass
 
 
+def load_dotenv(dotenv_path=None):
+    """
+    轻量原生加载 .env 环境变量文件，支持注释、引号与空行过滤（零外部 pip 依赖）。
+    仅当环境变量在当前系统环境中不存在时注入，避免覆盖已显式导出的环境。
+    """
+    if dotenv_path is None:
+        dotenv_path = Path(__file__).resolve().parent / ".env"
+    if dotenv_path.exists():
+        try:
+            for line in dotenv_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip("'\"")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+        except Exception:
+            pass
+
+load_dotenv()
+
+
 # ---------------------------------------------------------------------------
 # 条目规范化与哈希
 # ---------------------------------------------------------------------------
@@ -405,15 +429,20 @@ class RealBwClient:
 
     def _password_once(self):
         if self._password is None:
-            from_env = os.environ.get(self._pw_env_name) if self._pw_env_name else None
+            # 只有符合合法环境变量命名格式的标识才尝试从系统环境读取
+            is_valid_env = bool(self._pw_env_name and re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', str(self._pw_env_name).strip()))
+            from_env = os.environ.get(self._pw_env_name) if is_valid_env else None
             if from_env:
                 self._password = from_env
             elif not os.environ.get("BW_SYNC_HEADLESS") and sys.stdin and hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
                 self._password = getpass.getpass(
                     f"输入 {self.label} 的主密码（不会保存）：")
             else:
-                env_hint = self._pw_env_name or "BW_SYNC_PASSWORD"
-                raise BwError(f"[{self.label}] 未检测到主密码环境变量 {env_hint}，且处于非交互/无头运行模式")
+                # 严禁回显任何不符合合法环境变量命名的内容（杜绝用户误将密码明文作为变量名填入时在报错中泄漏）
+                safe_env_hint = self._pw_env_name if is_valid_env else "BW_SYNC_PASSWORD"
+                raise BwError(
+                    f"[{self.label}] 未检测到主密码环境变量（请在 .env 中配置 {safe_env_hint} 注入），且处于非交互/无头运行模式"
+                )
         return self._password
 
     # -- 对外接口 -----------------------------------------------------------

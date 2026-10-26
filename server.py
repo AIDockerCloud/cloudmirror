@@ -40,6 +40,7 @@ import bw_sync
 from s3_sync import S3SourceManager, TagManager, S3ScheduleManager, S3_PROVIDERS
 
 BASE_DIR = Path(__file__).resolve().parent
+bw_sync.load_dotenv(BASE_DIR / ".env")
 WEB_DIR = BASE_DIR / "web"
 DATA_DIR = BASE_DIR / "data"
 SOURCES_FILE = DATA_DIR / "sources.json"
