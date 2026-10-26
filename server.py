@@ -24,7 +24,10 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone, timedelta
-from http.server import HTTPServer, BaseHTTPRequestHandler
+try:
+    from http.server import ThreadingHTTPServer as HttpServerClass, BaseHTTPRequestHandler
+except ImportError:
+    from http.server import HTTPServer as HttpServerClass, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from urllib.parse import urlparse, parse_qs
@@ -384,7 +387,7 @@ def background_scheduler_worker():
                     if res.get("success"):
                         datastore.add_task({
                             "id": f"task-sched-{int(time.time())}",
-                            "title": f"定时任务: {sched['name']}",
+                            "title": f"定时任务: {sched.get('name', '未命名')}",
                             "type": "s3",
                             "mode": "schedule-apply",
                             "sources": [sched.get("primary_name", "主桶"), sched.get("backup_name", "备桶")],
@@ -393,8 +396,33 @@ def background_scheduler_worker():
                             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                             "duration_s": 1.5,
                         })
+                    else:
+                        datastore.add_task({
+                            "id": f"task-sched-{int(time.time())}",
+                            "title": f"定时任务: {sched.get('name', '未命名')}",
+                            "type": "s3",
+                            "mode": "schedule-apply",
+                            "sources": [sched.get("primary_name", "主桶"), sched.get("backup_name", "备桶")],
+                            "status": "error",
+                            "summary": f"定时同步执行失败: {res.get('message', '未知错误')}",
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "duration_s": 0.5,
+                        })
         except Exception as e:
-            pass
+            try:
+                datastore.add_task({
+                    "id": f"task-sched-err-{int(time.time())}",
+                    "title": "后台调度器异常",
+                    "type": "s3",
+                    "mode": "schedule-worker",
+                    "sources": ["系统调度器"],
+                    "status": "error",
+                    "summary": f"调度器轮询捕获异常: {str(e)}",
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "duration_s": 0.0,
+                })
+            except Exception:
+                pass
         time.sleep(15)  # 每 15 秒轮询一次
 
 
@@ -1534,7 +1562,7 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
 
 
 def run_server(host: str = "0.0.0.0", port: int = 8765):
-    server = HTTPServer((host, port), CloudMirrorHandler)
+    server = HttpServerClass((host, port), CloudMirrorHandler)
     print(f"CloudMirror Web Server started at http://{host}:{port}")
     print(f"Serving UI from {WEB_DIR}")
     try:

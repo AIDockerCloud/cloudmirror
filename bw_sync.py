@@ -369,14 +369,12 @@ class RealBwClient:
             from_env = os.environ.get(self._pw_env_name) if self._pw_env_name else None
             if from_env:
                 self._password = from_env
-            elif self._pw_env_name and not self._pw_env_name.startswith("BW_SYNC_"):
-                # 用户在配置中直接指定了密码值而非环境变量名
-                self._password = self._pw_env_name
             elif sys.stdin and hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
                 self._password = getpass.getpass(
                     f"输入 {self.label} 的主密码（不会保存）：")
             else:
-                raise BwError(f"[{self.label}] 未检测到主密码环境变量 {self._pw_env_name}，且处于非交互无头环境")
+                env_hint = self._pw_env_name or "BW_SYNC_PASSWORD"
+                raise BwError(f"[{self.label}] 未检测到主密码环境变量 {env_hint}，且处于非交互无头环境")
         return self._password
 
     # -- 对外接口 -----------------------------------------------------------
@@ -497,7 +495,33 @@ def empty_state():
     return {"pairs": {}, "hashes": {"a": {}, "b": {}}, "tombstones": {}}
 
 
-def plan_sync(a_recs, b_recs, state, label_a, label_b, today, trash_a_recs=None, trash_b_recs=None):
+def has_existing_conflict_copy(target_conflict_copies, source_rec):
+    """检测目标端是否已存在一条由 source_rec 产生的冲突副本（阻断失败重试时的增殖）"""
+    if not target_conflict_copies or not source_rec:
+        return False
+    src_uname = extract_item_username(source_rec.norm)
+    src_pw = (source_rec.raw.get("login") or {}).get("password")
+    src_notes = source_rec.raw.get("notes")
+    src_base_name = source_rec.name.strip()
+    for it in target_conflict_copies:
+        it_name = (it.get("name") or "").strip()
+        if CONFLICT_MARKER in it_name and it_name.startswith(src_base_name):
+            it_login = it.get("login") or {}
+            it_uname = it_login.get("username")
+            it_pw = it_login.get("password")
+            it_notes = it.get("notes")
+            if source_rec.raw.get("type") == 1:
+                if (it_uname or "") == (src_uname or "") and (it_pw or "") == (src_pw or ""):
+                    return True
+            else:
+                if (it_notes or "") == (src_notes or ""):
+                    return True
+    return False
+
+
+def plan_sync(a_recs, b_recs, state, label_a, label_b, today,
+              trash_a_recs=None, trash_b_recs=None,
+              conflict_copies_a=None, conflict_copies_b=None):
     report = {
         "same": [], "conflicts": [], "known_conflicts": [],
         "only_a": [], "only_b": [],
@@ -537,12 +561,14 @@ def plan_sync(a_recs, b_recs, state, label_a, label_b, today, trash_a_recs=None,
                 report["known_conflicts"].append(ra.name)
             else:
                 report["conflicts"].append((ra.name, rb.name))
-                actions.append({"kind": "conflict", "from": "a", "to": "b",
-                                "rec": ra, "peer_name": rb.name,
-                                "new_name": f"{ra.name}{CONFLICT_MARKER}{label_a} {today}]"})
-                actions.append({"kind": "conflict", "from": "b", "to": "a",
-                                "rec": rb, "peer_name": ra.name,
-                                "new_name": f"{rb.name}{CONFLICT_MARKER}{label_b} {today}]"})
+                if not has_existing_conflict_copy(conflict_copies_b, ra):
+                    actions.append({"kind": "conflict", "from": "a", "to": "b",
+                                    "rec": ra, "peer_name": rb.name,
+                                    "new_name": f"{ra.name}{CONFLICT_MARKER}{label_a} {today}]"})
+                if not has_existing_conflict_copy(conflict_copies_a, rb):
+                    actions.append({"kind": "conflict", "from": "b", "to": "a",
+                                    "rec": rb, "peer_name": ra.name,
+                                    "new_name": f"{rb.name}{CONFLICT_MARKER}{label_b} {today}]"})
             note_pair(ra, rb)
         elif ra is not None or rb is not None:
             # 一边消失：疑似删除。存活方记墓碑、不补回、不删除，只报告。
@@ -620,12 +646,14 @@ def plan_sync(a_recs, b_recs, state, label_a, label_b, today, trash_a_recs=None,
             ra, rb = final_unmatched_a[0], final_unmatched_b[0]
             discovered_pairs[ra.id] = rb.id
             report["conflicts"].append((ra.name, rb.name))
-            actions.append({"kind": "conflict", "from": "a", "to": "b",
-                            "rec": ra, "peer_name": rb.name,
-                            "new_name": f"{ra.name}{CONFLICT_MARKER}{label_a} {today}]"})
-            actions.append({"kind": "conflict", "from": "b", "to": "a",
-                            "rec": rb, "peer_name": ra.name,
-                            "new_name": f"{rb.name}{CONFLICT_MARKER}{label_b} {today}]"})
+            if not has_existing_conflict_copy(conflict_copies_b, ra):
+                actions.append({"kind": "conflict", "from": "a", "to": "b",
+                                "rec": ra, "peer_name": rb.name,
+                                "new_name": f"{ra.name}{CONFLICT_MARKER}{label_a} {today}]"})
+            if not has_existing_conflict_copy(conflict_copies_a, rb):
+                actions.append({"kind": "conflict", "from": "b", "to": "a",
+                                "rec": rb, "peer_name": ra.name,
+                                "new_name": f"{rb.name}{CONFLICT_MARKER}{label_b} {today}]"})
             note_pair(ra, rb)
         elif final_unmatched_a and final_unmatched_b:
             uname = extract_item_username(final_unmatched_a[0].norm)
@@ -818,17 +846,17 @@ def render_report(report, label_a, label_b, applied):
 
 def prepare_recs(items, folders, is_trash=False):
     fmap = folder_name_map(folders)
-    recs, skipped_cc = [], 0
+    recs, conflict_copies = [], []
     for it in items or []:
         if not is_trash and it.get("deletedDate"):
             continue                      # 正常库过滤回收站
         if it.get("organizationId"):
             continue                      # 组织条目不在 v1 范围
         if is_conflict_copy(it):
-            skipped_cc += 1
+            conflict_copies.append(it)
             continue                      # 冲突副本是终点，不再参与同步
         recs.append(Rec(it, fmap))
-    return recs, skipped_cc
+    return recs, conflict_copies
 
 
 def run_one_round(client_a, client_b, state, apply, today, logger=None):
@@ -842,9 +870,10 @@ def run_one_round(client_a, client_b, state, apply, today, logger=None):
     trash_b_recs, _ = prepare_recs(trash_b, folders_b, is_trash=True)
     report, actions, skeleton = plan_sync(
         a_recs, b_recs, state, client_a.label, client_b.label, today,
-        trash_a_recs=trash_a_recs, trash_b_recs=trash_b_recs
+        trash_a_recs=trash_a_recs, trash_b_recs=trash_b_recs,
+        conflict_copies_a=cc_a, conflict_copies_b=cc_b
     )
-    report["skipped_conflict_copies"] = cc_a + cc_b
+    report["skipped_conflict_copies"] = len(cc_a) + len(cc_b)
     created_pairs = {}
     if apply and actions:
         folder_maps = {
@@ -919,6 +948,8 @@ def selftest():
     rep2, st2 = run_one_round(ca, cb, st, True, today)
     check("冲突副本不增殖", len(ca.items) == n_a and len(cb.items) == n_b
           and not rep2["conflicts"])
+    rep3, st3 = run_one_round(ca, cb, empty_state(), True, today)
+    check("即便state丢失重跑冲突副本亦不增殖", len(ca.items) == n_a and len(cb.items) == n_b)
 
     # 场景4：已配对条目在 B 被删 -> 疑似删除报告、不复活；再跑仍不复活
     ca = FakeBwClient("A", [_item("a1", "论坛")], [])

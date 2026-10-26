@@ -516,6 +516,19 @@ class S3SourceManager:
         }
 
 
+def compute_next_run(interval_type: str, interval_minutes: int = 60, base_time: Optional[datetime] = None) -> datetime:
+    """计算下一次调度的真实绝对时间戳（特别修正 daily_2am 为真实凌晨 02:00）"""
+    base = base_time or datetime.now()
+    if interval_type == "daily_2am":
+        target = base.replace(hour=2, minute=0, second=0, microsecond=0)
+        if target <= base:
+            target += timedelta(days=1)
+        return target
+    else:
+        mins = interval_minutes if interval_minutes > 0 else 60
+        return base + timedelta(minutes=mins)
+
+
 class S3ScheduleManager:
     """管理主桶到备桶的定时同步计划任务"""
 
@@ -572,7 +585,7 @@ class S3ScheduleManager:
                 "enabled": True,
                 "strategy": "safe_add_only",
                 "last_run": (now - timedelta(days=1)).strftime("%Y-%m-%d %H:%M"),
-                "next_run": (now + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M"),
+                "next_run": compute_next_run("daily_2am", 1440, now).strftime("%Y-%m-%d %H:%M"),
                 "last_status": "success",
             }
         ]
@@ -592,8 +605,9 @@ class S3ScheduleManager:
     def add_schedule(self, data: Dict[str, Any]) -> Dict[str, Any]:
         sched_id = data.get("id") or f"sched-{int(time.time() * 1000)}"
         interval_min = int(data.get("interval_minutes", 60))
+        interval_type = data.get("interval_type", "every_hour")
         now = datetime.now()
-        next_run = (now + timedelta(minutes=interval_min)).strftime("%Y-%m-%d %H:%M")
+        next_run = compute_next_run(interval_type, interval_min, now).strftime("%Y-%m-%d %H:%M")
 
         new_sched = {
             "id": sched_id,
@@ -601,7 +615,7 @@ class S3ScheduleManager:
             "tag": data.get("tag", "Obsidian"),
             "primary_id": data.get("primary_id", ""),
             "backup_id": data.get("backup_id", ""),
-            "interval_type": data.get("interval_type", "every_hour"),
+            "interval_type": interval_type,
             "interval_minutes": interval_min,
             "interval_label": data.get("interval_label", f"每 {interval_min} 分钟同步"),
             "enabled": bool(data.get("enabled", True)),
@@ -643,8 +657,11 @@ class S3ScheduleManager:
 
         now = datetime.now()
         sched["last_run"] = now.strftime("%Y-%m-%d %H:%M")
-        interval_min = sched.get("interval_minutes", 60)
-        sched["next_run"] = (now + timedelta(minutes=interval_min)).strftime("%Y-%m-%d %H:%M")
+        sched["next_run"] = compute_next_run(
+            sched.get("interval_type", "every_hour"),
+            sched.get("interval_minutes", 60),
+            now
+        ).strftime("%Y-%m-%d %H:%M")
         sched["last_status"] = "success" if res.get("success") else "error"
         self.save()
 

@@ -119,6 +119,21 @@ class TestS3SyncManager(unittest.TestCase):
         target = next(s for s in updated_schedules if s["id"] == sched_id)
         self.assertEqual(target["last_status"], "success")
 
+    def test_compute_next_run_daily_2am(self):
+        """compute_next_run accurately schedules next run at 02:00 AM."""
+        from datetime import datetime
+        from s3_sync import compute_next_run
+
+        # Case 1: Base time is 01:30 AM -> should be today at 02:00 AM
+        base_1 = datetime(2026, 10, 26, 1, 30, 0)
+        next_1 = compute_next_run("daily_2am", 1440, base_1)
+        self.assertEqual(next_1, datetime(2026, 10, 26, 2, 0, 0))
+
+        # Case 2: Base time is 02:15 AM -> should be tomorrow at 02:00 AM
+        base_2 = datetime(2026, 10, 26, 2, 15, 0)
+        next_2 = compute_next_run("daily_2am", 1440, base_2)
+        self.assertEqual(next_2, datetime(2026, 10, 27, 2, 0, 0))
+
 
 if __name__ == "__main__":
     unittest.main()
