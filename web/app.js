@@ -549,6 +549,8 @@ function getS3FormData() {
     prefix: document.getElementById('s3-input-prefix')?.value.trim() || '',
     access_key: document.getElementById('s3-input-ak')?.value.trim() || '',
     secret_key: document.getElementById('s3-input-sk')?.value.trim() || '',
+    access_key_env: document.getElementById('s3-input-ak-env')?.value.trim() || '',
+    secret_key_env: document.getElementById('s3-input-sk-env')?.value.trim() || '',
     ssl: document.getElementById('s3-input-ssl')?.checked ?? true,
     tags: Array.from(state.modalSelectedTags || []),
     savedAt: new Date().toLocaleTimeString()
@@ -1087,6 +1089,10 @@ function initS3Events() {
     if (skBtn) { skBtn.textContent = '👁️'; skBtn.title = '显示/隐藏密钥为*'; }
     const titleEl = document.getElementById('modal-s3-title');
     if (titleEl) titleEl.textContent = '新增 S3 存储桶与笔记数据源';
+    const akEnvInp = document.getElementById('s3-input-ak-env');
+    if (akEnvInp) akEnvInp.value = '';
+    const skEnvInp = document.getElementById('s3-input-sk-env');
+    if (skEnvInp) skEnvInp.value = '';
     state.modalSelectedTags = new Set([state.tags[0]?.name || 'Obsidian']);
     state.modalS3OriginalSk = '';
     state.modalS3OriginalUpdatedAt = null;
@@ -1142,6 +1148,16 @@ function initS3Events() {
     }
 
     const editId = document.getElementById('s3-input-id')?.value.trim();
+    const ak = document.getElementById('s3-input-ak').value.trim();
+    const sk = document.getElementById('s3-input-sk').value.trim();
+    const akEnv = document.getElementById('s3-input-ak-env')?.value.trim() || '';
+    const skEnv = document.getElementById('s3-input-sk-env')?.value.trim() || '';
+
+    if (!ak && !akEnv) {
+      showToast('请填写 Access Key ID 或指定 Access Key 环境变量名', 'error');
+      return;
+    }
+
     const payload = {
       name: document.getElementById('s3-input-name').value.trim(),
       provider: document.getElementById('s3-input-provider').value,
@@ -1149,8 +1165,10 @@ function initS3Events() {
       bucket: document.getElementById('s3-input-bucket').value.trim(),
       region: document.getElementById('s3-input-region').value.trim() || 'auto',
       prefix: document.getElementById('s3-input-prefix').value.trim(),
-      access_key: document.getElementById('s3-input-ak').value.trim(),
-      secret_key: document.getElementById('s3-input-sk').value.trim(),
+      access_key: ak,
+      secret_key: sk,
+      access_key_env: akEnv,
+      secret_key_env: skEnv,
       tags: tags,
       ssl: document.getElementById('s3-input-ssl').checked,
     };
@@ -1352,7 +1370,7 @@ function renderS3Sources() {
         </div>
         <div class="meta-field">
           <span class="meta-field-label">AK 标识:</span>
-          <span class="meta-field-value">${escapeHTML(src.access_key || '')}</span>
+          <span class="meta-field-value">${escapeHTML(src.access_key || '')} ${src.access_key_env ? `<span class="badge badge-success" style="font-size:0.7rem; padding:1px 5px; margin-left:4px;">ENV: ${escapeHTML(src.access_key_env)}</span>` : ''}</span>
         </div>
         <div class="meta-field">
           <span class="meta-field-label">Secret Key:</span>
@@ -1378,8 +1396,8 @@ function renderS3Sources() {
 
       <div class="source-card-footer">
         <div class="source-status">
-          <span class="pulse-dot" style="${src.status === 'demo' ? 'background:#eab308; box-shadow:0 0 8px #eab308;' : ''}"></span>
-          <span>${src.status === 'demo' ? '[DEMO演示] ' : ''}${src.objects_count != null ? src.objects_count : 0} 个笔记文件 (${src.total_size_mb != null ? src.total_size_mb : 0} MB)</span>
+          <span class="pulse-dot" style="${src.status === 'demo' ? 'background:#eab308; box-shadow:0 0 8px #eab308;' : 'background:#10b981; box-shadow:0 0 8px #10b981;'}"></span>
+          <span>${src.status === 'demo' ? '[DEMO演示] ' : '🟢 [真实S3] '}${src.objects_count != null ? src.objects_count : 0} 个笔记文件 (${src.total_size_mb != null ? src.total_size_mb : 0} MB)</span>
         </div>
         <div style="display:flex; gap:6px;">
           <button class="btn btn-secondary btn-sm" id="btn-copy-s3-${src.id}" title="复制此存储桶配置以快速创建新源">复制</button>
@@ -1444,6 +1462,10 @@ function renderS3Sources() {
       document.getElementById('s3-input-prefix').value = src.prefix || '';
       document.getElementById('s3-input-ak').value = src.access_key || '';
       document.getElementById('s3-input-sk').value = src.secret_key || '';
+      const cAkEnv = document.getElementById('s3-input-ak-env');
+      if (cAkEnv) cAkEnv.value = src.access_key_env || '';
+      const cSkEnv = document.getElementById('s3-input-sk-env');
+      if (cSkEnv) cSkEnv.value = src.secret_key_env || '';
       document.getElementById('s3-input-ssl').checked = Boolean(src.ssl !== false);
       state.modalSelectedTags = new Set(src.tags || []);
       state.modalS3OriginalSk = '';
@@ -1479,6 +1501,10 @@ function renderS3Sources() {
       document.getElementById('s3-input-prefix').value = src.prefix || '';
       document.getElementById('s3-input-ak').value = src.access_key || '';
       document.getElementById('s3-input-sk').value = src.secret_key || '';
+      const eAkEnv = document.getElementById('s3-input-ak-env');
+      if (eAkEnv) eAkEnv.value = src.access_key_env || '';
+      const eSkEnv = document.getElementById('s3-input-sk-env');
+      if (eSkEnv) eSkEnv.value = src.secret_key_env || '';
       document.getElementById('s3-input-ssl').checked = Boolean(src.ssl !== false);
       state.modalSelectedTags = new Set(src.tags || []);
       state.modalS3OriginalSk = src.secret_key || '';

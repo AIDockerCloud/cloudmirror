@@ -14,11 +14,16 @@ import hmac
 import hashlib
 import json
 import os
+import ssl
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 
 S3_PROVIDERS = [
     {"id": "Bitiful", "name": "缤纷云 (Bitiful)", "default_endpoint": "https://s3.bitiful.net", "region": "cn-east-1"},
@@ -41,6 +46,323 @@ DEFAULT_NOTE_TAGS = [
     {"id": "tag-anytype", "name": "Anytype", "color": "#14b8a6", "desc": "Anytype 块存储备份"},
     {"id": "tag-markdown", "name": "通用笔记", "color": "#64748b", "desc": "通用 Markdown 笔记库"},
 ]
+
+
+class S3Error(Exception):
+    """S3 协议请求异常（包含 HTTP 状态码与远端 XML 错误信息）"""
+    def __init__(self, message: str, status_code: Optional[int] = None, error_code: str = ""):
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_code = error_code
+
+
+def _clean_xml_tag(tag: str) -> str:
+    """去除 XML 标签的命名空间前缀"""
+    return tag.split("}")[-1] if "}" in tag else tag
+
+
+def _parse_s3_error_xml(xml_bytes: bytes) -> Tuple[str, str]:
+    """从 S3 错误 XML 响应中解析 Code 与 Message"""
+    code = ""
+    message = ""
+    try:
+        root = ET.fromstring(xml_bytes)
+        for elem in root.iter():
+            name = _clean_xml_tag(elem.tag)
+            if name == "Code":
+                code = (elem.text or "").strip()
+            elif name == "Message":
+                message = (elem.text or "").strip()
+    except Exception:
+        pass
+    return code, message
+
+
+class RealS3Client:
+    """
+    基于 Python 3 原生标准库实现的轻量级 S3 客户端 (零 pip 外部依赖)
+    严格遵循 AWS SigV4 认证规范，支持 ListObjectsV2 分页遍历、GetObject、PutObject、HeadObject
+    """
+    def __init__(
+        self,
+        endpoint: str,
+        bucket: str,
+        access_key: str = "",
+        secret_key: str = "",
+        region: str = "us-east-1",
+        ssl_verify: bool = True,
+        timeout: int = 30
+    ):
+        self.endpoint = endpoint.strip().rstrip("/")
+        self.bucket = bucket.strip().strip("/")
+        self.access_key = access_key.strip()
+        self.secret_key = secret_key.strip()
+        reg = (region.strip() or "us-east-1").lower()
+        self.region = reg
+        self.ssl_verify = ssl_verify
+        self.timeout = timeout
+
+    def is_configured(self) -> bool:
+        """检查凭据与存储桶是否完整配置且非演示掩码"""
+        if not self.endpoint or not self.bucket or not self.access_key or not self.secret_key:
+            return False
+        if "••••" in self.secret_key or "••••" in self.access_key:
+            return False
+        # 排除演示假 Key
+        if "example" in self.access_key.lower() or "admin_user" in self.access_key.lower():
+            return False
+        return True
+
+    def _sign_headers(
+        self,
+        method: str,
+        path: str,
+        query_params: Optional[Dict[str, str]] = None,
+        payload: bytes = b"",
+        extra_headers: Optional[Dict[str, str]] = None
+    ) -> Dict[str, str]:
+        """
+        按照 AWS Signature Version 4 (SigV4) 规范计算生成认证请求头
+        """
+        now = datetime.now(timezone.utc)
+        amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+        date_stamp = now.strftime("%Y%m%d")
+
+        parsed = urllib.parse.urlsplit(self.endpoint)
+        host = parsed.netloc
+
+        payload_hash = hashlib.sha256(payload).hexdigest()
+
+        # 1. Canonical URI
+        clean_path = path.strip("/")
+        if clean_path:
+            encoded_segments = [urllib.parse.quote(seg, safe="") for seg in clean_path.split("/")]
+            canonical_uri = "/" + "/".join(encoded_segments)
+        else:
+            canonical_uri = "/"
+
+        # 2. Canonical Query String (ASCII 字典序排序)
+        if query_params:
+            sorted_items = sorted(
+                (urllib.parse.quote(k, safe="~"), urllib.parse.quote(str(v), safe="~"))
+                for k, v in query_params.items()
+            )
+            canonical_querystring = "&".join(f"{k}={v}" for k, v in sorted_items)
+        else:
+            canonical_querystring = ""
+
+        # 3. Canonical Headers 与 Signed Headers
+        headers = {
+            "host": host,
+            "x-amz-date": amz_date,
+            "x-amz-content-sha256": payload_hash,
+        }
+        if extra_headers:
+            for k, v in extra_headers.items():
+                headers[k.lower().strip()] = str(v).strip()
+
+        sorted_headers = sorted(headers.items())
+        canonical_headers = "".join(f"{k}:{v}\n" for k, v in sorted_headers)
+        signed_headers = ";".join(k for k, _ in sorted_headers)
+
+        # 4. Canonical Request
+        canonical_request = (
+            f"{method.upper()}\n"
+            f"{canonical_uri}\n"
+            f"{canonical_querystring}\n"
+            f"{canonical_headers}\n"
+            f"{signed_headers}\n"
+            f"{payload_hash}"
+        )
+
+        # 5. String to Sign
+        algorithm = "AWS4-HMAC-SHA256"
+        credential_scope = f"{date_stamp}/{self.region}/s3/aws4_request"
+        string_to_sign = (
+            f"{algorithm}\n"
+            f"{amz_date}\n"
+            f"{credential_scope}\n"
+            f"{hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()}"
+        )
+
+        # 6. 派生 HMAC 签名密钥
+        def _hmac_sha256(key: bytes, msg: bytes) -> bytes:
+            return hmac.new(key, msg, hashlib.sha256).digest()
+
+        k_date = _hmac_sha256(b"AWS4" + self.secret_key.encode("utf-8"), date_stamp.encode("utf-8"))
+        k_region = _hmac_sha256(k_date, self.region.encode("utf-8"))
+        k_service = _hmac_sha256(k_region, b"s3")
+        k_signing = _hmac_sha256(k_service, b"aws4_request")
+
+        # 7. 计算 Signature
+        signature = hmac.new(k_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+
+        # 8. 构造 Authorization 报头
+        auth_header = (
+            f"{algorithm} "
+            f"Credential={self.access_key}/{credential_scope}, "
+            f"SignedHeaders={signed_headers}, "
+            f"Signature={signature}"
+        )
+
+        out_headers = {
+            "Host": host,
+            "x-amz-date": amz_date,
+            "x-amz-content-sha256": payload_hash,
+            "Authorization": auth_header,
+        }
+        if extra_headers:
+            for k, v in extra_headers.items():
+                out_headers[k] = str(v)
+
+        return out_headers
+
+    def _build_url_and_path(self, path_suffix: str = "", query_params: Optional[Dict[str, str]] = None) -> Tuple[str, str]:
+        parsed = urllib.parse.urlsplit(self.endpoint)
+        base_path = parsed.path.rstrip("/")
+        if path_suffix:
+            full_path = f"{base_path}/{self.bucket}/{path_suffix.lstrip('/')}"
+        else:
+            full_path = f"{base_path}/{self.bucket}"
+
+        query_str = ""
+        if query_params:
+            sorted_items = sorted(
+                (urllib.parse.quote(k, safe="~"), urllib.parse.quote(str(v), safe="~"))
+                for k, v in query_params.items()
+            )
+            query_str = "?" + "&".join(f"{k}={v}" for k, v in sorted_items)
+
+        url = f"{parsed.scheme}://{parsed.netloc}{full_path}{query_str}"
+        return url, full_path
+
+    def _request(
+        self,
+        method: str,
+        path_suffix: str = "",
+        query_params: Optional[Dict[str, str]] = None,
+        payload: bytes = b"",
+        extra_headers: Optional[Dict[str, str]] = None
+    ) -> Tuple[int, bytes, Dict[str, str]]:
+        if not self.is_configured():
+            raise S3Error("S3 客户端未配置有效凭据或存储桶")
+
+        url, req_path = self._build_url_and_path(path_suffix, query_params)
+        headers = self._sign_headers(method, req_path, query_params, payload, extra_headers)
+
+        req = urllib.request.Request(
+            url=url,
+            data=payload if method.upper() in ("PUT", "POST") else None,
+            headers=headers,
+            method=method.upper()
+        )
+
+        ctx = None
+        if url.startswith("https://") and not self.ssl_verify:
+            ctx = ssl._create_unverified_context()
+
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout, context=ctx) as resp:
+                status = resp.status
+                body = resp.read()
+                resp_headers = {k.lower(): v for k, v in resp.headers.items()}
+                return status, body, resp_headers
+        except urllib.error.HTTPError as e:
+            err_body = e.read()
+            code, msg = _parse_s3_error_xml(err_body)
+            err_text = f"HTTP {e.code} ({code or e.reason}): {msg or err_body.decode('utf-8', errors='replace')[:200]}"
+            raise S3Error(err_text, status_code=e.code, error_code=code)
+        except urllib.error.URLError as e:
+            raise S3Error(f"网络连接失败: {e.reason}")
+        except Exception as e:
+            raise S3Error(f"请求发生异常: {str(e)}")
+
+    def test_connection(self) -> Dict[str, Any]:
+        """连通性与权限探测：列出首批对象并统计容量"""
+        objects = self.list_objects(max_keys=100, paginate=False)
+        total_size = sum(o["size"] for o in objects)
+        return {
+            "connected": True,
+            "objects_count": len(objects),
+            "total_size_mb": round(total_size / (1024 * 1024), 2),
+        }
+
+    def list_objects(self, prefix: str = "", max_keys: int = 1000, paginate: bool = True) -> List[Dict[str, Any]]:
+        """
+        基于 ListObjectsV2 协议遍历存储桶对象，支持 ContinuationToken 翻页
+        """
+        all_objects = []
+        continuation_token = None
+
+        while True:
+            query = {
+                "list-type": "2",
+                "max-keys": str(max_keys)
+            }
+            if prefix:
+                query["prefix"] = prefix
+            if continuation_token:
+                query["continuation-token"] = continuation_token
+
+            status, body, headers = self._request("GET", path_suffix="", query_params=query)
+
+            root = ET.fromstring(body)
+            is_truncated = False
+            next_token = None
+
+            for child in root:
+                name = _clean_xml_tag(child.tag)
+                if name == "IsTruncated":
+                    is_truncated = (child.text or "").strip().lower() == "true"
+                elif name == "NextContinuationToken":
+                    next_token = (child.text or "").strip()
+                elif name == "Contents":
+                    obj = {"key": "", "size": 0, "etag": "", "last_modified": ""}
+                    for prop in child:
+                        pname = _clean_xml_tag(prop.tag)
+                        if pname == "Key":
+                            obj["key"] = prop.text or ""
+                        elif pname == "Size":
+                            try:
+                                obj["size"] = int(prop.text or 0)
+                            except ValueError:
+                                obj["size"] = 0
+                        elif pname == "ETag":
+                            obj["etag"] = (prop.text or "").strip('"')
+                        elif pname == "LastModified":
+                            obj["last_modified"] = prop.text or ""
+                    if obj["key"]:
+                        all_objects.append(obj)
+
+            if not paginate or not is_truncated or not next_token:
+                break
+            continuation_token = next_token
+
+        return all_objects
+
+    def get_object(self, key: str) -> Tuple[bytes, str]:
+        """获取对象二进制数据与 Content-Type"""
+        status, body, headers = self._request("GET", path_suffix=key)
+        content_type = headers.get("content-type", "application/octet-stream")
+        return body, content_type
+
+    def put_object(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
+        """上传对象二进制数据，返回 ETag"""
+        extra = {"content-type": content_type}
+        status, body, headers = self._request("PUT", path_suffix=key, payload=data, extra_headers=extra)
+        etag = headers.get("etag", "").strip('"')
+        return etag
+
+    def head_object(self, key: str) -> Dict[str, Any]:
+        """获取对象元数据（大小、ETag 等）"""
+        status, body, headers = self._request("HEAD", path_suffix=key)
+        return {
+            "size": int(headers.get("content-length", 0)),
+            "etag": headers.get("etag", "").strip('"'),
+            "content_type": headers.get("content-type", "application/octet-stream"),
+            "last_modified": headers.get("last-modified", ""),
+        }
+
 
 
 class TagManager:
@@ -302,6 +624,40 @@ class S3SourceManager:
             },
         ]
 
+    def get_credentials(self, src: Dict[str, Any]) -> Tuple[str, str]:
+        """解析存储源凭据，优先从环境变量读取"""
+        ak = ""
+        sk = ""
+        ak_env = src.get("access_key_env")
+        sk_env = src.get("secret_key_env")
+        if ak_env and os.environ.get(ak_env):
+            ak = os.environ[ak_env].strip()
+        if sk_env and os.environ.get(sk_env):
+            sk = os.environ[sk_env].strip()
+
+        if not ak:
+            ak = str(src.get("access_key", "")).strip()
+        if not sk:
+            sk = str(src.get("secret_key", "")).strip()
+        return ak, sk
+
+    def get_client(self, src: Dict[str, Any]) -> RealS3Client:
+        """根据数据源配置构造原生 S3 客户端"""
+        ak, sk = self.get_credentials(src)
+        return RealS3Client(
+            endpoint=src.get("endpoint", ""),
+            bucket=src.get("bucket", ""),
+            access_key=ak,
+            secret_key=sk,
+            region=src.get("region", "us-east-1"),
+            ssl_verify=bool(src.get("ssl", True)),
+        )
+
+    def is_real_configured(self, src: Dict[str, Any]) -> bool:
+        """检查数据源是否已配置真实有效凭据"""
+        client = self.get_client(src)
+        return client.is_configured()
+
     def list_sources(self, tag_filter: Optional[str] = None) -> List[Dict[str, Any]]:
         sources = self._sources
         if tag_filter and tag_filter != "all":
@@ -309,8 +665,17 @@ class S3SourceManager:
         safe_sources = []
         for s in sources:
             item = dict(s)
+            ak_env = item.get("access_key_env")
+            sk_env = item.get("secret_key_env")
+            has_env = bool(ak_env and os.environ.get(ak_env) and sk_env and os.environ.get(sk_env))
+            item["has_env_credentials"] = has_env
+            item["is_real_configured"] = self.is_real_configured(s)
+
             sk = item.get("secret_key", "")
-            if sk and not sk.startswith("••"):
+            if has_env:
+                item["access_key"] = f"[ENV: {ak_env}]"
+                item["secret_key"] = f"•••••••• [ENV: {sk_env}]"
+            elif sk and not sk.startswith("••"):
                 item["secret_key"] = f"••••••••••••{sk[-4:] if len(sk) >= 4 else '****'}"
             safe_sources.append(item)
         return safe_sources
@@ -329,7 +694,7 @@ class S3SourceManager:
         return None
 
     def add_source(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        source_id = data.get("id") or f"s3-{int(time.time() * 1000)}"
+        source_id = data.get("id") or f"s3-{uuid.uuid4().hex[:12]}"
         tags = data.get("tags", ["Obsidian"])
         new_source = {
             "id": source_id,
@@ -341,11 +706,13 @@ class S3SourceManager:
             "prefix": data.get("prefix", "").strip(),
             "access_key": data.get("access_key", "").strip(),
             "secret_key": data.get("secret_key", "").strip(),
+            "access_key_env": data.get("access_key_env", "").strip(),
+            "secret_key_env": data.get("secret_key_env", "").strip(),
             "password_updated_at": data.get("password_updated_at") or datetime.now(timezone.utc).isoformat(),
             "tags": tags,
-            "status": "connected",
-            "objects_count": data.get("objects_count", 100),
-            "total_size_mb": data.get("total_size_mb", 20.0),
+            "status": "connected" if self.is_real_configured(data) else "demo",
+            "objects_count": data.get("objects_count", 0),
+            "total_size_mb": data.get("total_size_mb", 0.0),
             "last_sync": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "ssl": bool(data.get("ssl", True)),
         }
@@ -370,7 +737,14 @@ class S3SourceManager:
                     # 密钥未变更：保留原时间戳，绝不误判重置
                     data["password_updated_at"] = s.get("password_updated_at") or datetime.now(timezone.utc).isoformat()
 
+                if "access_key_env" in data:
+                    data["access_key_env"] = data["access_key_env"].strip()
+                if "secret_key_env" in data:
+                    data["secret_key_env"] = data["secret_key_env"].strip()
+
                 self._sources[i].update(data)
+                if self.is_real_configured(self._sources[i]):
+                    self._sources[i]["status"] = "connected"
                 self.save()
                 res = dict(self._sources[i])
                 res["password_changed"] = password_changed
@@ -419,56 +793,206 @@ class S3SourceManager:
         bucket = src.get("bucket", "")
         if not endpoint or not bucket:
             return {"success": False, "is_demo": True, "message": "Endpoint 或 Bucket 为空"}
-        return {
-            "success": True,
-            "is_demo": True,
-            "latency_ms": 36,
-            "message": f"【DEMO 演示模式】已模拟连通响应（注意：当前 S3 模块处于原型演示阶段，底层尚未发起真实 SigV4 请求，未校验真实网络权限）",
-            "bucket_info": {
-                "name": bucket,
-                "objects": src.get("objects_count", 1024),
-                "size_mb": src.get("total_size_mb", 256.0),
-                "tags": src.get("tags", []),
+
+        if not self.is_real_configured(src):
+            return {
+                "success": True,
+                "is_demo": True,
+                "latency_ms": 36,
+                "message": f"【DEMO 演示模式】已模拟连通响应（注意：当前 S3 模块处于原型演示阶段，底层尚未配置有效真实密钥，未发起实际 SigV4 网络请求）",
+                "bucket_info": {
+                    "name": bucket,
+                    "objects": src.get("objects_count", 1024),
+                    "size_mb": src.get("total_size_mb", 256.0),
+                    "tags": src.get("tags", []),
+                }
             }
-        }
+
+        client = self.get_client(src)
+        start_t = time.time()
+        try:
+            info = client.test_connection()
+            latency = int((time.time() - start_t) * 1000)
+            for s in self._sources:
+                if s.get("id") == source_id:
+                    s["status"] = "connected"
+                    s["objects_count"] = info["objects_count"]
+                    s["total_size_mb"] = info["total_size_mb"]
+                    s["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            self.save()
+            return {
+                "success": True,
+                "is_demo": False,
+                "latency_ms": latency,
+                "message": f"真实 S3 连通成功 ({src.get('provider')})，共探测到 {info['objects_count']} 个对象",
+                "bucket_info": {
+                    "name": bucket,
+                    "objects": info["objects_count"],
+                    "size_mb": info["total_size_mb"],
+                    "tags": src.get("tags", []),
+                }
+            }
+        except Exception as e:
+            latency = int((time.time() - start_t) * 1000)
+            return {
+                "success": False,
+                "is_demo": False,
+                "latency_ms": latency,
+                "message": f"S3 真实连通探测失败: {str(e)}"
+            }
 
     def compare_pair(self, primary_id: str, backup_id: str, tag: str = "") -> Dict[str, Any]:
-        """同标签下对主桶与备桶进行数据差异比对 (Dry-Run DEMO)"""
+        """同标签下对主桶与备桶进行数据差异比对"""
         pri = self.get_source(primary_id)
         bak = self.get_source(backup_id)
         if not pri or not bak:
             return {"success": False, "is_demo": True, "message": "主桶或备桶不存在"}
 
-        # 模拟比对条目差异（生产中可执行 S3 list-objects 遍历与 ETag/SHA-256 比对）
-        pri_count = pri.get("objects_count", 1842)
-        bak_count = bak.get("objects_count", 1838)
-        diff_count = max(0, pri_count - bak_count)
-        if diff_count == 0:
-            diff_count = 4
+        # 如果主桶与备桶未同时配置真实有效密钥，回退至 DEMO 演算模式
+        if not (self.is_real_configured(pri) and self.is_real_configured(bak)):
+            pri_count = pri.get("objects_count", 1842)
+            bak_count = bak.get("objects_count", 1838)
+            diff_count = max(0, pri_count - bak_count)
+            if diff_count == 0:
+                diff_count = 4
 
-        mock_diff = {
-            "success": True,
-            "is_demo": True,
-            "demo_warning": "⚠️ 警告：当前 S3 差异对比处于 DEMO 演算模式，未遍历真实远程 S3 存储桶！",
-            "tag": tag or (pri.get("tags", ["未命名"])[0]),
-            "primary": {"id": pri["id"], "name": pri["name"], "bucket": pri["bucket"], "objects_count": pri_count},
-            "backup": {"id": bak["id"], "name": bak["name"], "bucket": bak["bucket"], "objects_count": bak_count},
-            "identical_count": min(pri_count, bak_count),
-            "to_sync_count": diff_count,
-            "conflict_count": 0,
-            "tombstone_count": 0,
-            "sample_pending_files": [
-                f"{pri.get('prefix', '')}2026/10/今日工作日志.md (新增待同步·演示)",
-                f"{pri.get('prefix', '')}assets/架构拓扑图-v2.png (增量资产·演示)",
-                f"{pri.get('prefix', '')}kanban/项目迭代进度.md (主桶已更新·演示)",
-                f"{pri.get('prefix', '')}templates/周报模板.md (待补齐到备桶·演示)",
-            ][:diff_count],
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        return mock_diff
+            mock_diff = {
+                "success": True,
+                "is_demo": True,
+                "demo_warning": "⚠️ 警告：当前 S3 差异对比处于 DEMO 演算模式，未遍历真实远程 S3 存储桶！",
+                "tag": tag or (pri.get("tags", ["未命名"])[0]),
+                "strategy": "safe_add_only (DEMO)",
+                "primary": {"id": pri["id"], "name": pri["name"], "bucket": pri["bucket"], "objects_count": pri_count},
+                "backup": {"id": bak["id"], "name": bak["name"], "bucket": bak["bucket"], "objects_count": bak_count},
+                "identical_count": min(pri_count, bak_count),
+                "to_sync_count": diff_count,
+                "retained_count": 0,
+                "conflict_count": 0,
+                "tombstone_count": 0,
+                "sample_pending_files": [
+                    f"{pri.get('prefix', '')}2026/10/今日工作日志.md (新增待同步·演示)",
+                    f"{pri.get('prefix', '')}assets/架构拓扑图-v2.png (增量资产·演示)",
+                    f"{pri.get('prefix', '')}kanban/项目迭代进度.md (主桶已更新·演示)",
+                    f"{pri.get('prefix', '')}templates/周报模板.md (待补齐到备桶·演示)",
+                ][:diff_count],
+                "pending_details": [],
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            return mock_diff
+
+        # 真实跨桶 S3 比对
+        try:
+            pri_client = self.get_client(pri)
+            bak_client = self.get_client(bak)
+
+            pri_prefix = pri.get("prefix", "").strip().lstrip("/")
+            bak_prefix = bak.get("prefix", "").strip().lstrip("/")
+
+            pri_objects = pri_client.list_objects(prefix=pri_prefix)
+            bak_objects = bak_client.list_objects(prefix=bak_prefix)
+
+            # 以相对路径建索引映射
+            pri_map = {}
+            for o in pri_objects:
+                key = o["key"]
+                if pri_prefix and key.startswith(pri_prefix):
+                    rel = key[len(pri_prefix):].lstrip("/")
+                else:
+                    rel = key
+                if rel:
+                    pri_map[rel] = o
+
+            bak_map = {}
+            for o in bak_objects:
+                key = o["key"]
+                if bak_prefix and key.startswith(bak_prefix):
+                    rel = key[len(bak_prefix):].lstrip("/")
+                else:
+                    rel = key
+                if rel:
+                    bak_map[rel] = o
+
+            def _build_bak_key(rel_path: str) -> str:
+                if bak_prefix:
+                    return f"{bak_prefix.rstrip('/')}/{rel_path}"
+                return rel_path
+
+            # 判定是否为思源笔记标签
+            target_tag = tag or (pri.get("tags", [""])[0])
+            is_siyuan = ("思源" in target_tag or "siyuan" in target_tag.lower())
+
+            identical = []
+            to_sync = []
+            retained = [] # 仅在备桶存在的孤立对象（零硬删除，冷备安全保留）
+
+            for rel, pri_item in pri_map.items():
+                target_key = _build_bak_key(rel)
+                bak_item = bak_map.get(rel)
+                if not bak_item:
+                    to_sync.append({
+                        "rel_path": rel,
+                        "pri_key": pri_item["key"],
+                        "bak_key": target_key,
+                        "reason": "missing_on_backup",
+                        "size": pri_item["size"],
+                    })
+                elif is_siyuan:
+                    # 思源笔记不可变块存储逻辑：相同大小块视作哈希相同且不可变，绝不重复覆写；大小不一致才判定为新版本
+                    if pri_item["size"] == bak_item["size"]:
+                        identical.append(rel)
+                    else:
+                        to_sync.append({
+                            "rel_path": rel,
+                            "pri_key": pri_item["key"],
+                            "bak_key": target_key,
+                            "reason": "modified_size_mismatch",
+                            "size": pri_item["size"],
+                        })
+                else:
+                    # 通用文件比对：大小与 ETag 一致跳过；否则待同步
+                    if pri_item["size"] == bak_item["size"] and (not pri_item.get("etag") or not bak_item.get("etag") or pri_item["etag"] == bak_item["etag"]):
+                        identical.append(rel)
+                    else:
+                        to_sync.append({
+                            "rel_path": rel,
+                            "pri_key": pri_item["key"],
+                            "bak_key": target_key,
+                            "reason": "modified",
+                            "size": pri_item["size"],
+                        })
+
+            for rel in bak_map:
+                if rel not in pri_map:
+                    retained.append(rel)
+
+            strategy_name = "siyuan_block_mirror" if is_siyuan else "safe_add_only"
+
+            return {
+                "success": True,
+                "is_demo": False,
+                "tag": target_tag,
+                "strategy": strategy_name,
+                "is_siyuan": is_siyuan,
+                "primary": {"id": pri["id"], "name": pri["name"], "bucket": pri["bucket"], "objects_count": len(pri_objects)},
+                "backup": {"id": bak["id"], "name": bak["name"], "bucket": bak["bucket"], "objects_count": len(bak_objects)},
+                "identical_count": len(identical),
+                "to_sync_count": len(to_sync),
+                "retained_count": len(retained),
+                "conflict_count": 0,
+                "tombstone_count": 0,
+                "sample_pending_files": [item["rel_path"] for item in to_sync[:20]],
+                "pending_details": to_sync,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "is_demo": False,
+                "message": f"真实 S3 比对失败: {str(e)}"
+            }
 
     def sync_pair(self, primary_id: str, backup_id: str, tag: str = "", apply: bool = True, strategy: str = "safe_add_only") -> Dict[str, Any]:
-        """从主桶向备桶执行数据同步（DEMO 演示模式）"""
+        """从主桶向备桶执行数据同步"""
         comp = self.compare_pair(primary_id, backup_id, tag)
         if not comp.get("success"):
             return comp
@@ -477,39 +1001,104 @@ class S3SourceManager:
         bak = comp["backup"]
         to_sync = comp["to_sync_count"]
 
+        # DEMO 模式分支
+        if comp.get("is_demo"):
+            logs = [
+                f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️【DEMO 演示模式警告】当前 S3 模块处于原型演示阶段，未建立真实网络连接，未同步任何实际远端对象！严禁视作真实备份依据！",
+                f"[{datetime.now().strftime('%H:%M:%S')}] 启动同标签主备桶演示同步 (标签: {comp['tag']})",
+                f"[{datetime.now().strftime('%H:%M:%S')}] 主桶 (Source): {pri['name']} ({pri['bucket']})",
+                f"[{datetime.now().strftime('%H:%M:%S')}] 备桶 (Target): {bak['name']} ({bak['bucket']})",
+                f"[{datetime.now().strftime('%H:%M:%S')}] 策略: {strategy} (演示模式严格只增不改不删)",
+                f"[{datetime.now().strftime('%H:%M:%S')}] 模拟扫描对象: 相同对象 {comp['identical_count']} 个，待同步增量 {to_sync} 个",
+            ]
+            if apply:
+                for f in comp["sample_pending_files"]:
+                    logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] -> 模拟写入备桶: {f}")
+                logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ℹ️ [DEMO 演算完成] 模拟写入流程已结束（未发生实际远程对象传输）。")
+                for s in self._sources:
+                    if s["id"] == backup_id:
+                        s["objects_count"] = pri["objects_count"]
+                        s["last_sync"] = "未同步 (DEMO演示)"
+                    elif s["id"] == primary_id:
+                        s["last_sync"] = "未同步 (DEMO演示)"
+                self.save()
+            else:
+                logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] （DEMO 只读演算预览模式，未发生任何写入）")
+
+            return {
+                "success": True,
+                "is_demo": True,
+                "mode": "apply" if apply else "dry-run",
+                "tag": comp["tag"],
+                "strategy": comp.get("strategy", strategy),
+                "primary": pri,
+                "backup": bak,
+                "synced_objects": to_sync if apply else 0,
+                "pending_objects": to_sync,
+                "logs": logs,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+
+        # 真实 S3 跨桶同步分支
+        pri_src = self.get_source(primary_id)
+        bak_src = self.get_source(backup_id)
+        pri_client = self.get_client(pri_src)
+        bak_client = self.get_client(bak_src)
+
+        is_siyuan = comp.get("is_siyuan", False)
+        actual_strategy = comp.get("strategy", strategy)
+
         logs = [
-            f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️【DEMO 演示模式警告】当前 S3 模块处于原型演示阶段，未建立真实网络连接，未同步任何实际远端对象！严禁视作真实备份依据！",
-            f"[{datetime.now().strftime('%H:%M:%S')}] 启动同标签主备桶演示同步 (标签: {comp['tag']})",
+            f"[{datetime.now().strftime('%H:%M:%S')}] 🚀 启动真实 S3 主备同步任务 (标签: {comp['tag']})",
             f"[{datetime.now().strftime('%H:%M:%S')}] 主桶 (Source): {pri['name']} ({pri['bucket']})",
             f"[{datetime.now().strftime('%H:%M:%S')}] 备桶 (Target): {bak['name']} ({bak['bucket']})",
-            f"[{datetime.now().strftime('%H:%M:%S')}] 策略: {strategy} (演示模式严格只增不改不删)",
-            f"[{datetime.now().strftime('%H:%M:%S')}] 模拟扫描对象: 相同对象 {comp['identical_count']} 个，待同步增量 {to_sync} 个",
+            f"[{datetime.now().strftime('%H:%M:%S')}] 策略: {actual_strategy} {'(思源笔记块存储不可变镜像：零覆写同大小块、零硬删除)' if is_siyuan else '(只增不改不删，单边孤立块安全保留)'}",
+            f"[{datetime.now().strftime('%H:%M:%S')}] 扫描结果: 相同对象 {comp['identical_count']} 个，待同步增量 {to_sync} 个，备桶保留孤立对象 {comp.get('retained_count', 0)} 个",
         ]
 
+        synced_count = 0
+        synced_bytes = 0
+        pending_details = comp.get("pending_details", [])
+
         if apply:
-            for f in comp["sample_pending_files"]:
-                logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] -> 模拟写入备桶: {f}")
-            logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ℹ️ [DEMO 演算完成] 模拟写入流程已结束（未发生实际远程对象传输）。")
+            for item in pending_details:
+                try:
+                    rel = item["rel_path"]
+                    pri_k = item["pri_key"]
+                    bak_k = item["bak_key"]
+                    data, ctype = pri_client.get_object(pri_k)
+                    bak_client.put_object(bak_k, data, content_type=ctype)
+                    synced_count += 1
+                    synced_bytes += len(data)
+                    logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] -> 写入成功: {rel} ({len(data)} 字节)")
+                except Exception as e:
+                    logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ 写入失败: {item.get('rel_path')} - {str(e)}")
+
+            logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ 跨桶数据同步完成，成功传输 {synced_count}/{len(pending_details)} 个对象，共 {round(synced_bytes / 1024 / 1024, 2)} MB。")
 
             # 更新数据源状态
             for s in self._sources:
                 if s["id"] == backup_id:
                     s["objects_count"] = pri["objects_count"]
-                    s["last_sync"] = "未同步 (DEMO演示)"
+                    s["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M")
                 elif s["id"] == primary_id:
-                    s["last_sync"] = "未同步 (DEMO演示)"
+                    s["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M")
             self.save()
         else:
-            logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] （DEMO 只读演算预览模式，未发生任何写入）")
+            logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] （只读预览模式，未发生任何实际数据写入）")
+            for rel in comp.get("sample_pending_files", []):
+                logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] -> 待同步预览: {rel}")
 
         return {
             "success": True,
-            "is_demo": True,
+            "is_demo": False,
             "mode": "apply" if apply else "dry-run",
             "tag": comp["tag"],
+            "strategy": actual_strategy,
             "primary": pri,
             "backup": bak,
-            "synced_objects": to_sync if apply else 0,
+            "synced_objects": synced_count if apply else 0,
+            "synced_bytes": synced_bytes,
             "pending_objects": to_sync,
             "logs": logs,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -603,7 +1192,7 @@ class S3ScheduleManager:
         return enriched
 
     def add_schedule(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        sched_id = data.get("id") or f"sched-{int(time.time() * 1000)}"
+        sched_id = data.get("id") or f"sched-{uuid.uuid4().hex[:12]}"
         interval_min = int(data.get("interval_minutes", 60))
         interval_type = data.get("interval_type", "every_hour")
         now = datetime.now()

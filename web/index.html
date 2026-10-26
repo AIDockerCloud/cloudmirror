@@ -852,16 +852,35 @@
 
           <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
             <div class="form-group">
-              <label class="form-label" for="s3-input-ak">Access Key ID *</label>
-              <input type="text" class="form-input" id="s3-input-ak" placeholder="AKIA... 或 btf_ak_..." required>
+              <label class="form-label" for="s3-input-ak">Access Key ID</label>
+              <input type="text" class="form-input" id="s3-input-ak" placeholder="AKIA... 或 btf_ak_...">
             </div>
             <div class="form-group">
-              <label class="form-label" for="s3-input-sk">Secret Access Key *</label>
+              <label class="form-label" for="s3-input-sk">Secret Access Key</label>
               <div style="display:flex; gap:6px; align-items:center;">
-                <input type="password" class="form-input" id="s3-input-sk" placeholder="••••••••••••" required style="flex:1;">
+                <input type="password" class="form-input" id="s3-input-sk" placeholder="••••••••••••" style="flex:1;">
                 <button type="button" class="btn btn-secondary btn-sm" id="btn-toggle-modal-s3-sk" title="显示/隐藏密钥为*" style="padding:7px 11px; font-size:0.92rem;">👁️</button>
               </div>
               <div id="s3-sk-lifecycle-hint" class="password-lifecycle-hint" style="margin-top:6px;"></div>
+            </div>
+          </div>
+
+          <div style="background: rgba(14, 165, 233, 0.08); border: 1px dashed rgba(14, 165, 233, 0.3); border-radius: 8px; padding: 10px 14px; margin-top: 6px; margin-bottom: 8px;">
+            <div style="font-size: 0.85rem; font-weight: 600; color: #38bdf8; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
+              <span>🛡️ 环境变量注入凭据 (生产环境推荐)</span>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+              <div>
+                <label class="form-label" for="s3-input-ak-env" style="font-size: 0.78rem;">Access Key 环境变量名</label>
+                <input type="text" class="form-input" id="s3-input-ak-env" placeholder="例如: S3_R2_ACCESS_KEY" style="font-size: 0.82rem; padding: 6px 10px;">
+              </div>
+              <div>
+                <label class="form-label" for="s3-input-sk-env" style="font-size: 0.78rem;">Secret Key 环境变量名</label>
+                <input type="text" class="form-input" id="s3-input-sk-env" placeholder="例如: S3_R2_SECRET_KEY" style="font-size: 0.82rem; padding: 6px 10px;">
+              </div>
+            </div>
+            <div style="font-size: 0.75rem; color: #94a3b8; margin-top: 5px;">
+              提示：若配置了环境变量名，系统运行时将优先从宿主环境变量安全读取凭据，避免密钥明文上盘。
             </div>
           </div>
 

@@ -1,6 +1,6 @@
 ---
 pcmp_version: "2.2"
-revision: 8
+revision: 9
 updated: 2026-10-26
 ---
 
@@ -198,6 +198,28 @@ updated: 2026-10-26
 - 理由 (Reason): 实现真正的同步幂等防膨胀，提升服务端并发吞吐量与审计透明度，加固凭据零泄露红线。
 - 备选方案 (Alternatives): 依赖全量写入事务回滚。放弃理由：跨第三方 CLI 外部调用难以保证原子事务回滚，目标端去重更为切实可靠。
 - 影响 (Consequences): 单元测试扩充至 36 项且全部通过；即使外部网络反复中断，重试亦绝对保证冲突副本不增殖。
+
+---
+
+## DEC-011 — 原生 AWS SigV4 S3 客户端、思源笔记不可变镜像与环境变量凭据注入
+日期: 2026-10-26 | 状态: Accepted
+- 确认来源: 人类开发者指令“请完成P0后提交推送到远程再完成P1推送到远程，再做P2”
+- Supersedes: 无
+- Superseded-by: 无
+- 复审触发条件 (Review Trigger): 当引入其他非 S3 对象存储协议（如 WebDAV）或需要支持多段断点分块并发上传时复审
+- 背景 (Context):
+  1. 原 S3 模块仅具备前端交互与后台演算 Mock 数据，属于演示壳，未建立真实网络连接与对象比对传输；
+  2. 对象存储密钥若直接明文保存在 JSON 配置文件中，存在泄露隐患；
+  3. 对于思源笔记（SiYuan）等具备特定块存储特性的知识库，其 `data/` 与 `assets/` 块均以哈希/UUID 命名且具有不可变性，双桶同步需跳过相同大小块以避免重复覆写，且严禁硬删除备桶孤立块。
+- 决策 (Decision):
+  1. **零 pip 依赖原生 SigV4 S3 客户端 (`RealS3Client`)**：基于 Python 3 原生标准库（`urllib.request`, `hashlib`, `hmac`, `xml.etree.ElementTree`）实现完整 AWS Signature Version 4 签名计算、`ListObjectsV2`（支持 `ContinuationToken` 翻页）、`GetObject`、`PutObject`、`HeadObject` 与 XML 错误解析；
+  2. **思源笔记不可变块镜像模式 (`siyuan_block_mirror`)**：检测到“思源笔记”标签时自动启用该策略，相同大小的哈希块直接认定相同并跳过；仅增量写入缺失或变更块；备桶单边孤立块安全保留（零硬删除）；
+  3. **环境变量凭据注入安全机制**：S3 存储源配置新增 `access_key_env` 与 `secret_key_env` 支持，运行时优先动态读取宿主环境变量，并在 Web 控制台打上 `[ENV: ...]` 安全标识，避免密钥明文上盘；
+  4. **沙箱演示与真实网络平滑共存**：未配置有效密钥或环境变量时继续平滑处于 DEMO 演示保护状态；配置有效真实凭据后即时切换至原生真实 S3 引擎。
+- 理由 (Reason): 弥合 S3 演示壳与 Bitwarden 真实引擎的成熟度断层，坚持零 pip 外部依赖约束，落实只增不改不删安全底线与凭据防泄露红线。
+- 备选方案 (Alternatives): 引入第三方 boto3 或 minio-py 库。放弃理由：违背本项目全链路 Python 3 原生标准库零 pip 外部依赖核心约束。
+- 影响 (Consequences): S3 模块由演示原型蜕变为具备真实跨云同步能力的对象存储备份引擎；单元测试扩充至 43 项且全部通过。
+
 
 
 
