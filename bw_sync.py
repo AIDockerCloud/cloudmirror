@@ -369,12 +369,12 @@ class RealBwClient:
             from_env = os.environ.get(self._pw_env_name) if self._pw_env_name else None
             if from_env:
                 self._password = from_env
-            elif sys.stdin and hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
+            elif not os.environ.get("BW_SYNC_HEADLESS") and sys.stdin and hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
                 self._password = getpass.getpass(
                     f"输入 {self.label} 的主密码（不会保存）：")
             else:
                 env_hint = self._pw_env_name or "BW_SYNC_PASSWORD"
-                raise BwError(f"[{self.label}] 未检测到主密码环境变量 {env_hint}，且处于非交互无头环境")
+                raise BwError(f"[{self.label}] 未检测到主密码环境变量 {env_hint}，且处于非交互/无头运行模式")
         return self._password
 
     # -- 对外接口 -----------------------------------------------------------

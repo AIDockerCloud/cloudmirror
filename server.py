@@ -17,6 +17,9 @@ import json
 import mimetypes
 import os
 import random
+
+# Web 容器运行模式：禁止任何底层客户端在后台工作线程挂起等待终端交互输入
+os.environ["BW_SYNC_HEADLESS"] = "1"
 import re
 import shutil
 import subprocess
