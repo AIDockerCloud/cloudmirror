@@ -51,10 +51,10 @@ class BwError(Exception):
     pass
 
 
-def load_dotenv(dotenv_path=None):
+def load_dotenv(dotenv_path=None, override=False):
     """
     轻量原生加载 .env 环境变量文件，支持注释、引号与空行过滤（零外部 pip 依赖）。
-    仅当环境变量在当前系统环境中不存在时注入，避免覆盖已显式导出的环境。
+    支持 override 参数（当环境变量已存在时是否以 .env 中的最新值为准）。
     """
     if dotenv_path is None:
         dotenv_path = Path(__file__).resolve().parent / ".env"
@@ -66,8 +66,10 @@ def load_dotenv(dotenv_path=None):
                     continue
                 k, v = line.split("=", 1)
                 k = k.strip()
-                v = v.strip().strip("'\"")
-                if k and k not in os.environ:
+                v = v.strip()
+                if len(v) >= 2 and ((v[0] == '"' and v[-1] == '"') or (v[0] == "'" and v[-1] == "'")):
+                    v = v[1:-1]
+                if k and (override or k not in os.environ or not os.environ.get(k)):
                     os.environ[k] = v
         except Exception:
             pass
@@ -391,6 +393,10 @@ class RealBwClient:
     def _api_key(self):
         cid = os.environ.get(self._cid_env)
         csec = os.environ.get(self._csec_env)
+        if (not cid or not csec) and self._cid_env and self._csec_env:
+            load_dotenv(override=True)
+            cid = os.environ.get(self._cid_env)
+            csec = os.environ.get(self._csec_env)
         return (cid, csec) if cid and csec else None
 
     # -- 内部工具 -----------------------------------------------------------
@@ -432,6 +438,10 @@ class RealBwClient:
             # 只有符合合法环境变量命名格式的标识才尝试从系统环境读取
             is_valid_env = bool(self._pw_env_name and re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', str(self._pw_env_name).strip()))
             from_env = os.environ.get(self._pw_env_name) if is_valid_env else None
+            # 若系统环境中未找到，且为合法变量名，动态重新尝试从 .env 加载（支持服务运行期间更新 .env 即时生效）
+            if not from_env and is_valid_env:
+                load_dotenv(override=True)
+                from_env = os.environ.get(self._pw_env_name)
             if from_env:
                 self._password = from_env
             elif not os.environ.get("BW_SYNC_HEADLESS") and sys.stdin and hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
