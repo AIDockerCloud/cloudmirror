@@ -401,12 +401,18 @@
               </div>
 
               <div style="display:flex; align-items:center; justify-content:space-between; margin-top:20px; padding-top:14px; border-top:1px solid var(--border-subtle); flex-wrap:wrap; gap:10px;">
-                <div style="font-size:0.78rem; color:var(--text-dim);">
-                  💡 策略：仅单向写入备桶缺失对象，备桶独有文件不被抹除，零数据丢失风险。
+                <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                  <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:0.85rem;">
+                    <input type="checkbox" id="s3-sync-dryrun-toggle" checked style="accent-color:#06b6d4; width:18px; height:18px;">
+                    <span>只读预览模式 (Dry-Run: 绝不修改备桶)</span>
+                  </label>
+                  <span style="font-size:0.78rem; color:var(--text-dim);">
+                    💡 策略：仅单向写入备桶缺失对象，备桶独有文件不被抹除，零数据丢失风险。
+                  </span>
                 </div>
                 <div style="display:flex; gap:10px;">
                   <button class="btn btn-secondary btn-sm" id="btn-pair-compare"><span>🔍</span> 差异比对 (Dry-Run)</button>
-                  <button class="btn btn-primary btn-sm" id="btn-pair-sync"><span>🚀</span> 立即同步到备桶</button>
+                  <button class="btn btn-primary btn-sm" id="btn-pair-sync"><span>🚀</span> 执行 S3 主备同步</button>
                   <button class="btn btn-accent btn-sm" id="btn-open-pair-schedule"><span>⏰</span> 设定定时同步计划</button>
                 </div>
               </div>

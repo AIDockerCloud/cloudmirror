@@ -156,27 +156,33 @@ def extract_item_username(norm):
     return ""
 
 
+def extract_item_folder(norm):
+    return (norm.get("folder") or "").strip().casefold()
+
+
 def natural_key(norm):
     """
     条目自然键判定：
-    - 严格遵循：项目名称/域名标识 (Item Identifier) + 账号 (Username) 共同构成独立条目标识；
-    - 类型一致的前提下，域名标识与账号均相同判定为同一数据条目；
-    - 允许同一项目名/域名下注册不同账号（不同账号不混淆、不冲突）；
-    - 若无域名或非登录条目降级退回规范化项目名称 + 账号。
+    - 严格遵循：项目名称/域名标识 (Item Identifier) + 账号 (Username) + 所属文件夹 (Folder) 共同构成独立条目标识；
+    - 类型一致的前提下，域名标识、账号与文件夹均相同判定为同一数据条目；
+    - 允许不同文件夹下存放同域名/同账号条目（不同文件夹独立配对，不混淆、不跨文件夹错配）；
+    - 若无域名或非登录条目降级退回规范化项目名称 + 账号 + 文件夹。
     """
     itype = norm.get("type")
     ident = extract_item_domain(norm)
     if not ident:
         ident = normalize_item_name(norm.get("name"))
     username = extract_item_username(norm)
-    return (itype, ident, username)
+    folder = extract_item_folder(norm)
+    return (itype, ident, username, folder)
 
 
 
 def find_duplicates_in_items(items, fname_by_id=None):
     """
     在单端保险库数据源内部查找完全重复的数据。
-    严格判定标准：必须是域名 (Domain) + 账号 (Username) + 密码 (Password) 完全一致。
+    严格判定标准：必须是域名 (Domain) + 账号 (Username) + 密码 (Password) + 所属文件夹 (Folder) 完全一致。
+    不同文件夹下的相同密码视为合法的跨目录独立副本，不归为重复条目。
     返回重复分组清单与可清理的副本条目列表（每组安全保留 1 份原件）。
     """
     if fname_by_id is None:
@@ -190,6 +196,7 @@ def find_duplicates_in_items(items, fname_by_id=None):
         itype = norm.get("type", 1)
         domain = extract_item_domain(norm)
         username = extract_item_username(norm)
+        folder = extract_item_folder(norm)
         login = item.get("login") or {}
         password = login.get("password") or ""
 
@@ -197,13 +204,13 @@ def find_duplicates_in_items(items, fname_by_id=None):
         if not domain or (not username and not password):
             continue
 
-        key = (itype, domain, username, password)
+        key = (itype, domain, username, password, folder)
         groups_map.setdefault(key, []).append((item, norm))
 
     duplicate_groups = []
     total_duplicate_copies = 0
 
-    for (itype, domain, username, password), item_tuples in groups_map.items():
+    for (itype, domain, username, password, folder), item_tuples in groups_map.items():
         if len(item_tuples) > 1:
             # 排序规则确定保留原件：优先保留收藏（favorite）、带有较多 fields/notes 的项
             def sort_key(t):
@@ -222,6 +229,7 @@ def find_duplicates_in_items(items, fname_by_id=None):
                 "domain": domain,
                 "username": username,
                 "password": password,
+                "folder": folder,
                 "type": itype,
                 "total_count": len(sorted_items),
                 "keep": {
@@ -503,9 +511,10 @@ def has_existing_conflict_copy(target_conflict_copies, source_rec):
     src_pw = (source_rec.raw.get("login") or {}).get("password")
     src_notes = source_rec.raw.get("notes")
     src_base_name = source_rec.name.strip()
+    expected_marker_prefix = f"{src_base_name}{CONFLICT_MARKER}"
     for it in target_conflict_copies:
         it_name = (it.get("name") or "").strip()
-        if CONFLICT_MARKER in it_name and it_name.startswith(src_base_name):
+        if it_name.startswith(expected_marker_prefix):
             it_login = it.get("login") or {}
             it_uname = it_login.get("username")
             it_pw = it_login.get("password")
@@ -1093,7 +1102,14 @@ def resolve_pair_state_file(base_dir, side_a, side_b, custom_state_arg=None):
     legacy = Path(base_dir) / "bw-sync-state.json"
     if not target.exists() and legacy.exists():
         try:
-            shutil.copyfile(legacy, target)
+            existing_pairs = [f for f in Path(base_dir).glob("bw-sync-state-*.json") if not f.name.endswith(".tmp")]
+            if not existing_pairs:
+                shutil.copyfile(legacy, target)
+            else:
+                legacy_data = load_json(legacy, empty_state())
+                new_state = empty_state()
+                new_state["tombstones"] = dict(legacy_data.get("tombstones") or {})
+                save_json(target, new_state)
         except Exception:
             pass
     return target

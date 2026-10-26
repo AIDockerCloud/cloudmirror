@@ -57,5 +57,57 @@ class TestBwSync(unittest.TestCase):
                 client._password_once()
 
 
+    def test_duplicates_isolated_by_folder(self):
+        """Identical credentials in different folders must not be reported as duplicates."""
+        fnames = {"f1": "工作", "f2": "个人"}
+        # Two items with same domain, username, password but in different folders
+        item_work = bw_sync._item("i1", "GitHub", user="alice", pw="secret", uri="https://github.com", folder_id="f1")
+        item_personal = bw_sync._item("i2", "GitHub", user="alice", pw="secret", uri="https://github.com", folder_id="f2")
+        dup_res = bw_sync.find_duplicates_in_items([item_work, item_personal], fnames)
+        self.assertEqual(dup_res["duplicate_groups_count"], 0, "Different folders must not be grouped as duplicates")
+        self.assertEqual(dup_res["duplicate_items_count"], 0)
+
+        # Same credentials in same folder must be detected as duplicate
+        item_work_clone = bw_sync._item("i3", "GitHub Clone", user="alice", pw="secret", uri="https://github.com", folder_id="f1")
+        dup_res_same = bw_sync.find_duplicates_in_items([item_work, item_personal, item_work_clone], fnames)
+        self.assertEqual(dup_res_same["duplicate_groups_count"], 1)
+        self.assertEqual(dup_res_same["duplicate_items_count"], 1)
+
+    def test_natural_key_includes_folder(self):
+        """Natural key must incorporate folder name to prevent cross-folder clashing."""
+        fnames = {"f1": "工作", "f2": "个人"}
+        i1 = bw_sync.normalize_item(bw_sync._item("1", "GitHub", user="u", uri="https://github.com", folder_id="f1"), fnames)
+        i2 = bw_sync.normalize_item(bw_sync._item("2", "GitHub", user="u", uri="https://github.com", folder_id="f2"), fnames)
+        k1 = bw_sync.natural_key(i1)
+        k2 = bw_sync.natural_key(i2)
+        self.assertNotEqual(k1, k2, "Items in different folders must have distinct natural keys")
+        self.assertEqual(k1[-1], "工作")
+        self.assertEqual(k2[-1], "个人")
+
+    def test_conflict_copy_exact_marker_matching(self):
+        """Conflict copy detection must match full marker prefix, not prefix overlap like GitHub vs GitHub 备用."""
+        fnames = {}
+        source_rec = bw_sync.Rec(bw_sync._item("src1", "GitHub", user="alice", pw="p1"), fnames)
+        # Target has a conflict copy of "GitHub 备用"
+        conflict_item_other = bw_sync._item(
+            "c1",
+            f"GitHub 备用{bw_sync.CONFLICT_MARKER}Node 2026-10-27]",
+            user="alice",
+            pw="p1"
+        )
+        # Should NOT match because source is "GitHub", not "GitHub 备用"
+        self.assertFalse(bw_sync.has_existing_conflict_copy([conflict_item_other], source_rec))
+
+        # Target has genuine conflict copy of "GitHub"
+        conflict_item_exact = bw_sync._item(
+            "c2",
+            f"GitHub{bw_sync.CONFLICT_MARKER}Node 2026-10-27]",
+            user="alice",
+            pw="p1"
+        )
+        self.assertTrue(bw_sync.has_existing_conflict_copy([conflict_item_exact], source_rec))
+
+
 if __name__ == "__main__":
     unittest.main()
+

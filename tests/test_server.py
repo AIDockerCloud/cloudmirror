@@ -556,6 +556,39 @@ class TestServerAPI(unittest.TestCase):
             data = json.loads(pair_file.read_text(encoding="utf-8"))
             self.assertEqual(data.get("pairs", {}).get("a1"), "b1")
 
+    def test_api_token_auth_protection(self):
+        """API endpoints require valid token when API_TOKEN is configured."""
+        import server
+        orig_token = server.API_TOKEN
+        server.API_TOKEN = "secret-token-12345"
+        try:
+            # 1. Without token -> 401 Unauthorized
+            try:
+                urllib.request.urlopen(self._url("/api/status"))
+                self.fail("Expected HTTP 401 Unauthorized")
+            except urllib.error.HTTPError as e:
+                self.assertEqual(e.code, 401)
+                body = json.loads(e.read().decode("utf-8"))
+                self.assertFalse(body.get("success"))
+                self.assertIn("Unauthorized", body.get("error", ""))
+
+            # 2. With Bearer token -> 200 OK
+            req_bearer = urllib.request.Request(self._url("/api/status"), headers={"Authorization": "Bearer secret-token-12345"})
+            with urllib.request.urlopen(req_bearer) as resp:
+                self.assertEqual(resp.status, 200)
+
+            # 3. With X-API-Token header -> 200 OK
+            req_xtoken = urllib.request.Request(self._url("/api/status"), headers={"X-API-Token": "secret-token-12345"})
+            with urllib.request.urlopen(req_xtoken) as resp:
+                self.assertEqual(resp.status, 200)
+
+            # 4. Static UI files remain accessible without token
+            req_static = urllib.request.Request(self._url("/"))
+            with urllib.request.urlopen(req_static) as resp:
+                self.assertEqual(resp.status, 200)
+        finally:
+            server.API_TOKEN = orig_token
+
 
 if __name__ == "__main__":
     unittest.main()

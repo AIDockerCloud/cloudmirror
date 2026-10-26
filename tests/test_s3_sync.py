@@ -8,6 +8,7 @@ persistent TagManager (uniqueness validation), same-tag primary/backup sync, and
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch, MagicMock
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -360,6 +361,156 @@ class TestS3EnvCredentialsAndSiYuan(unittest.TestCase):
             self.assertEqual(diff["retained_count"], 1)  # deleted-old-block.sy preserved (zero delete)
             self.assertEqual(diff["sample_pending_files"], ["20261026-block2.sy"])
 
+    def test_sync_pair_partial_failure_semantics(self):
+        """sync_pair must report partial status on partial failure, record failed objects, and not overwrite objects_count."""
+        pri = self.src_mgr.add_source({
+            "name": "PriPartial",
+            "provider": "Bitiful",
+            "endpoint": "https://s3.bitiful.net",
+            "bucket": "pri-partial-bucket",
+            "access_key_env": "TEST_R2_AK",
+            "secret_key_env": "TEST_R2_SK",
+            "tags": ["通用笔记"]
+        })
+        bak = self.src_mgr.add_source({
+            "name": "BakPartial",
+            "provider": "Bitiful",
+            "endpoint": "https://s3.bitiful.net",
+            "bucket": "bak-partial-bucket",
+            "access_key_env": "TEST_R2_AK",
+            "secret_key_env": "TEST_R2_SK",
+            "tags": ["通用笔记"]
+        })
+        bak_before_count = bak.get("objects_count", 0)
+
+        # Primary has 2 objects missing on backup
+        pri_objs = [
+            {"key": "file1.txt", "size": 100, "etag": "e1"},
+            {"key": "file2.txt", "size": 200, "etag": "e2"},
+        ]
+        mock_pri_client = MagicMock()
+        mock_pri_client.is_configured.return_value = True
+        mock_pri_client.list_objects.return_value = pri_objs
+
+        mock_bak_client = MagicMock()
+        mock_bak_client.is_configured.return_value = True
+        mock_bak_client.list_objects.return_value = []
+
+        # Make file1 succeed and file2 fail
+        def fake_transfer(pri_k, bak_client, bak_k, max_retries=3):
+            if "file2" in pri_k:
+                raise IOError("Simulated network drop on file2")
+            return 100, "etag1"
+
+        mock_pri_client.transfer_to.side_effect = fake_transfer
+
+        with patch.object(self.src_mgr, "get_client", side_effect=lambda s: mock_pri_client if s["id"] == pri["id"] else mock_bak_client):
+            res = self.src_mgr.sync_pair(pri["id"], bak["id"], tag="通用笔记", apply=True)
+
+            self.assertFalse(res["success"], "Partial failure must not return success=True")
+            self.assertEqual(res["status"], "partial")
+            self.assertEqual(res["synced_objects"], 1)
+            self.assertEqual(res["failed_count"], 1)
+            self.assertEqual(len(res["failed_objects"]), 1)
+            self.assertEqual(res["failed_objects"][0]["rel_path"], "file2.txt")
+
+            # Check that backup source objects_count was NOT updated to primary's count
+            bak_after = self.src_mgr.get_source(bak["id"])
+            self.assertEqual(bak_after.get("objects_count", 0), bak_before_count)
+
+    def test_siyuan_pointer_sorted_last(self):
+        """Pointer files like 'latest' and manifests must be sorted after chunk files in to_sync list."""
+        pri = self.src_mgr.add_source({
+            "name": "PriSiYuan",
+            "provider": "Bitiful",
+            "endpoint": "https://s3.bitiful.net",
+            "bucket": "pri-siyuan-bucket",
+            "access_key_env": "TEST_R2_AK",
+            "secret_key_env": "TEST_R2_SK",
+            "tags": ["思源笔记"]
+        })
+        bak = self.src_mgr.add_source({
+            "name": "BakSiYuan",
+            "provider": "Bitiful",
+            "endpoint": "https://s3.bitiful.net",
+            "bucket": "bak-siyuan-bucket",
+            "access_key_env": "TEST_R2_AK",
+            "secret_key_env": "TEST_R2_SK",
+            "tags": ["思源笔记"]
+        })
+
+        pri_objs = [
+            {"key": "latest", "size": 32, "etag": "e_latest"},
+            {"key": "data/20261027-block1.sy", "size": 1024, "etag": "e_b1"},
+            {"key": "manifest.json", "size": 64, "etag": "e_manifest"},
+            {"key": "data/20261027-block2.sy", "size": 2048, "etag": "e_b2"},
+        ]
+
+        mock_pri_client = MagicMock()
+        mock_pri_client.is_configured.return_value = True
+        mock_pri_client.list_objects.return_value = pri_objs
+
+        mock_bak_client = MagicMock()
+        mock_bak_client.is_configured.return_value = True
+        mock_bak_client.list_objects.return_value = []
+
+        with patch.object(self.src_mgr, "get_client", side_effect=lambda s: mock_pri_client if s["id"] == pri["id"] else mock_bak_client):
+            diff = self.src_mgr.compare_pair(pri["id"], bak["id"], tag="思源笔记")
+            self.assertTrue(diff["success"])
+            pending = [item["rel_path"] for item in diff["pending_details"]]
+            # Data blocks must appear before pointer files
+            self.assertIn(pending[-2], ("latest", "manifest.json"))
+            self.assertIn(pending[-1], ("latest", "manifest.json"))
+            self.assertTrue(pending[0].startswith("data/"))
+            self.assertTrue(pending[1].startswith("data/"))
+
+    def test_siyuan_non_chunk_requires_etag_match(self):
+        """Non-chunk paths in SiYuan (assets, latest) must compare both size and ETag, not size alone."""
+        pri = self.src_mgr.add_source({
+            "name": "PriSiYuanETag",
+            "provider": "Bitiful",
+            "endpoint": "https://s3.bitiful.net",
+            "bucket": "pri-sy-etag",
+            "access_key_env": "TEST_R2_AK",
+            "secret_key_env": "TEST_R2_SK",
+            "tags": ["思源笔记"]
+        })
+        bak = self.src_mgr.add_source({
+            "name": "BakSiYuanETag",
+            "provider": "Bitiful",
+            "endpoint": "https://s3.bitiful.net",
+            "bucket": "bak-sy-etag",
+            "access_key_env": "TEST_R2_AK",
+            "secret_key_env": "TEST_R2_SK",
+            "tags": ["思源笔记"]
+        })
+
+        pri_objs = [
+            {"key": "data/chunk.sy", "size": 100, "etag": "e_chunk_pri"},
+            {"key": "assets/photo.jpg", "size": 500, "etag": "e_photo_pri"},
+        ]
+        bak_objs = [
+            # chunk has same size, different etag -> should be identical (content-hash addressed)
+            {"key": "data/chunk.sy", "size": 100, "etag": "e_chunk_bak"},
+            # photo has same size, different etag -> MUST be detected as modified (non-chunk)
+            {"key": "assets/photo.jpg", "size": 500, "etag": "e_photo_bak"},
+        ]
+
+        mock_pri_client = MagicMock()
+        mock_pri_client.is_configured.return_value = True
+        mock_pri_client.list_objects.return_value = pri_objs
+
+        mock_bak_client = MagicMock()
+        mock_bak_client.is_configured.return_value = True
+        mock_bak_client.list_objects.return_value = bak_objs
+
+        with patch.object(self.src_mgr, "get_client", side_effect=lambda s: mock_pri_client if s["id"] == pri["id"] else mock_bak_client):
+            diff = self.src_mgr.compare_pair(pri["id"], bak["id"], tag="思源笔记")
+            self.assertTrue(diff["success"])
+            self.assertEqual(diff["identical_count"], 1) # only data/chunk.sy
+            self.assertEqual(diff["to_sync_count"], 1)   # assets/photo.jpg needs sync
+            self.assertEqual(diff["pending_details"][0]["rel_path"], "assets/photo.jpg")
+
 
 class TestRealS3ClientMockHttp(unittest.TestCase):
     """Test RealS3Client against local HTTP server without external dependencies."""
@@ -450,6 +601,19 @@ class TestRealS3ClientMockHttp(unittest.TestCase):
         meta = client.head_object("test.txt")
         self.assertEqual(meta["size"], 42)
         self.assertEqual(meta["etag"], "mock-etag-head")
+
+    def test_mock_s3_transfer_to_streaming(self):
+        from s3_sync import RealS3Client
+        client = RealS3Client(
+            endpoint=f"http://127.0.0.1:{self.port}",
+            bucket="mock-bucket",
+            access_key="mock_ak",
+            secret_key="mock_sk",
+            region="us-east-1"
+        )
+        total_bytes, etag = client.transfer_to("test.txt", client, "copy.txt", max_retries=2)
+        self.assertEqual(total_bytes, len(b"Hello S3 Mock"))
+        self.assertEqual(etag, "mock-etag-put")
 
 
 if __name__ == "__main__":

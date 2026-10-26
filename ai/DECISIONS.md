@@ -1,7 +1,7 @@
 ---
 pcmp_version: "2.2"
-revision: 9
-updated: 2026-10-26
+revision: 10
+updated: 2026-10-27
 ---
 
 # 架构与技术决策记录 (DECISIONS.md)
@@ -219,6 +219,33 @@ updated: 2026-10-26
 - 理由 (Reason): 弥合 S3 演示壳与 Bitwarden 真实引擎的成熟度断层，坚持零 pip 外部依赖约束，落实只增不改不删安全底线与凭据防泄露红线。
 - 备选方案 (Alternatives): 引入第三方 boto3 或 minio-py 库。放弃理由：违背本项目全链路 Python 3 原生标准库零 pip 外部依赖核心约束。
 - 影响 (Consequences): S3 模块由演示原型蜕变为具备真实跨云同步能力的对象存储备份引擎；单元测试扩充至 43 项且全部通过。
+
+---
+
+## DEC-012 — Bitwarden 文件夹维度去重与自然键隔离、S3 部分失败真实语义、流式重试与前端 Dry-Run 控制
+日期: 2026-10-27 | 状态: Accepted
+- 确认来源: 人类开发者明确需求“请优化，另外Bitwarden在对比时加上所属文件夹名称，这样不同文件夹的相同密码就不会报重复了”及交互确认
+- Supersedes: 无
+- Superseded-by: 无
+- 复审触发条件 (Review Trigger): 当重构文件夹映射层级关系（如嵌套子目录）或引入多段断点分块上传时复审
+- 背景 (Context):
+  1. 密码保险库中存在跨工作/个人不同文件夹存放同域名且同账号密码的合法需求，原判重键未包含文件夹导致误报重复；
+  2. 真实 S3 同步在单个对象异常时仅打印日志但仍返回 `success: True` 且覆盖备桶对象数目，存在“谎报成功”缺陷；
+  3. 大对象全包读取存在 OOM 隐患，且网络抖动无退避重试；
+  4. 思源笔记指针类对象字典序优先传输易造成备桶快照悬空，非 chunk 路径简单按大小判定容易跳过修改；
+  5. 前端 S3 同步按钮硬编码 `apply: true`，缺乏只读预览保护；
+  6. 控制台任务历史未展示 `is_real`，难以区分模拟与真实同步。
+- 决策 (Decision):
+  1. **Bitwarden 文件夹维度去重与自然键隔离**：`find_duplicates_in_items` 判定键扩充为 `(itype, domain, username, password, folder)`，彻底杜绝跨文件夹误报重复；`natural_key` 同步纳入 `folder`；`has_existing_conflict_copy` 修正为全 marker 前缀精确匹配，消除前缀重叠误判；
+  2. **S3 部分失败语义与备桶状态保护**：`sync_pair` 引入 `failed_objects` 跟踪，失败数大于 0 时返回 `status: "partial"` 且 `success: False`；备桶 `objects_count` 与 `last_sync` 仅在 100% 成功时更新；
+  3. **大对象流式传输与指数退避重试 (`transfer_to`)**：使用 `SpooledTemporaryFile(max_size=8MB)` 进行分块流式直传，大对象自动落盘防 OOM；集成 3 次失败指数退避重试（0.5s, 1s, 2s）；
+  4. **思源笔记镜像精细化**：仅 `data/*.sy` 块走纯大小判定，`latest`、`assets/` 附件等一律执行大小 + ETag 复合校验；待传输对象强制先数据块后指针引用；
+  5. **前端 Dry-Run 控制与角标闭环**：S3 面板增加只读预览复选框；任务列表与仪表盘显式渲染 `🟢 真实` 与 `🟡 模拟` 角标；
+  6. **轻量鉴权与实测耗时**：服务端支持 `CLOUDMIRROR_API_TOKEN` / `--token` 鉴权与指定 host 绑定，记录实测秒级 `duration_s`。
+- 理由 (Reason): 满足用户真实的跨目录密码管理习惯，彻底根除“谎报成功”隐患，建立稳定抗网络抖动的大文件传输防线，提升全链路可见度与安全性。
+- 备选方案 (Alternatives): 忽略文件夹或强行要求不同密码。放弃理由：违背用户实际生活工作密码隔离管理习惯。
+- 影响 (Consequences): 单元测试由 43 项扩充至 51 项且全部通过；自测 12/12 组全部通过；代码与协议规范严格保持一致。
+
 
 
 

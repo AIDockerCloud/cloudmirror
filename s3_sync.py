@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import ssl
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -119,7 +120,8 @@ class RealS3Client:
         path: str,
         query_params: Optional[Dict[str, str]] = None,
         payload: bytes = b"",
-        extra_headers: Optional[Dict[str, str]] = None
+        extra_headers: Optional[Dict[str, str]] = None,
+        payload_hash_override: Optional[str] = None
     ) -> Dict[str, str]:
         """
         按照 AWS Signature Version 4 (SigV4) 规范计算生成认证请求头
@@ -131,7 +133,10 @@ class RealS3Client:
         parsed = urllib.parse.urlsplit(self.endpoint)
         host = parsed.netloc
 
-        payload_hash = hashlib.sha256(payload).hexdigest()
+        if payload_hash_override:
+            payload_hash = payload_hash_override
+        else:
+            payload_hash = hashlib.sha256(payload).hexdigest()
 
         # 1. Canonical URI
         clean_path = path.strip("/")
@@ -362,6 +367,83 @@ class RealS3Client:
             "content_type": headers.get("content-type", "application/octet-stream"),
             "last_modified": headers.get("last-modified", ""),
         }
+
+    def transfer_to(
+        self,
+        key: str,
+        target_client: "RealS3Client",
+        target_key: str,
+        max_retries: int = 3,
+        chunk_size: int = 64 * 1024
+    ) -> Tuple[int, str]:
+        """
+        流式对象直传（带 8MB 内存缓冲区/溢出临时文件落盘与指数退避重试）：
+        避免整包 bytearray 暴涨引发 OOM，抗网络抖动。
+        返回 (transferred_bytes, target_etag)。
+        """
+        last_exc = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                # 1. 发起 GET 请求
+                get_url, get_path = self._build_url_and_path(path_suffix=key)
+                get_headers = self._sign_headers("GET", get_path)
+                get_req = urllib.request.Request(url=get_url, headers=get_headers, method="GET")
+                get_ctx = ssl._create_unverified_context() if (get_url.startswith("https://") and not self.ssl_verify) else None
+
+                with urllib.request.urlopen(get_req, timeout=self.timeout, context=get_ctx) as resp:
+                    content_type = resp.headers.get("content-type", "application/octet-stream")
+                    # 使用 SpooledTemporaryFile，8MB 以内驻留内存，超 8MB 自动缓冲落盘
+                    with tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b") as spool:
+                        hasher = hashlib.sha256()
+                        total_bytes = 0
+                        while True:
+                            chunk = resp.read(chunk_size)
+                            if not chunk:
+                                break
+                            spool.write(chunk)
+                            hasher.update(chunk)
+                            total_bytes += len(chunk)
+
+                        spool.seek(0)
+                        sha256_hex = hasher.hexdigest()
+
+                        # 2. 上传至目标端
+                        target_url, target_path = target_client._build_url_and_path(path_suffix=target_key)
+                        extra = {
+                            "content-type": content_type,
+                            "content-length": str(total_bytes)
+                        }
+                        target_headers = target_client._sign_headers(
+                            "PUT",
+                            target_path,
+                            payload=b"",
+                            extra_headers=extra,
+                            payload_hash_override=sha256_hex
+                        )
+                        put_req = urllib.request.Request(
+                            url=target_url,
+                            data=spool,
+                            headers=target_headers,
+                            method="PUT"
+                        )
+                        put_ctx = ssl._create_unverified_context() if (target_url.startswith("https://") and not target_client.ssl_verify) else None
+                        with urllib.request.urlopen(put_req, timeout=target_client.timeout, context=put_ctx) as put_resp:
+                            etag = put_resp.headers.get("etag", "").strip('"')
+                            return total_bytes, etag
+            except urllib.error.HTTPError as e:
+                err_body = e.read()
+                code, msg = _parse_s3_error_xml(err_body)
+                last_exc = S3Error(f"HTTP {e.code} ({code or e.reason}): {msg or err_body.decode('utf-8', errors='replace')[:200]}", status_code=e.code, error_code=code)
+            except urllib.error.URLError as e:
+                last_exc = S3Error(f"网络连接失败: {e.reason}")
+            except Exception as e:
+                last_exc = S3Error(f"传输异常: {str(e)}")
+
+            if attempt < max_retries:
+                time.sleep(0.5 * (2 ** (attempt - 1)))
+
+        raise last_exc or S3Error("传输失败且达到最大重试次数")
+
 
 
 
@@ -921,6 +1003,16 @@ class S3SourceManager:
             target_tag = tag or (pri.get("tags", [""])[0])
             is_siyuan = ("思源" in target_tag or "siyuan" in target_tag.lower())
 
+            def is_siyuan_chunk(rel_path: str) -> bool:
+                """思源笔记仅 data/ 目录下的 .sy 块文件为不可变哈希寻址块"""
+                clean = rel_path.strip().lower()
+                return clean.startswith("data/") and clean.endswith(".sy")
+
+            def is_siyuan_pointer(rel_path: str) -> bool:
+                """思源笔记指针、清单与快照类关键引用文件"""
+                name = rel_path.rsplit("/", 1)[-1].lower()
+                return name in ("latest", "manifest.json", "index.json", "sync.json") or name.endswith(".pointer") or "/conf/" in rel_path
+
             identical = []
             to_sync = []
             retained = [] # 仅在备桶存在的孤立对象（零硬删除，冷备安全保留）
@@ -937,17 +1029,31 @@ class S3SourceManager:
                         "size": pri_item["size"],
                     })
                 elif is_siyuan:
-                    # 思源笔记不可变块存储逻辑：相同大小块视作哈希相同且不可变，绝不重复覆写；大小不一致才判定为新版本
-                    if pri_item["size"] == bak_item["size"]:
-                        identical.append(rel)
+                    # 思源笔记不可变块存储逻辑：
+                    # 1) 仅 data/ 下的 .sy 哈希块享受“同大小即相同”不可变优化；
+                    # 2) 其余非块路径（latest、assets/ 附件、manifest、conf 等）必须通过大小 + ETag 校验！
+                    if is_siyuan_chunk(rel):
+                        if pri_item["size"] == bak_item["size"]:
+                            identical.append(rel)
+                        else:
+                            to_sync.append({
+                                "rel_path": rel,
+                                "pri_key": pri_item["key"],
+                                "bak_key": target_key,
+                                "reason": "modified_size_mismatch",
+                                "size": pri_item["size"],
+                            })
                     else:
-                        to_sync.append({
-                            "rel_path": rel,
-                            "pri_key": pri_item["key"],
-                            "bak_key": target_key,
-                            "reason": "modified_size_mismatch",
-                            "size": pri_item["size"],
-                        })
+                        if pri_item["size"] == bak_item["size"] and (not pri_item.get("etag") or not bak_item.get("etag") or pri_item["etag"] == bak_item["etag"]):
+                            identical.append(rel)
+                        else:
+                            to_sync.append({
+                                "rel_path": rel,
+                                "pri_key": pri_item["key"],
+                                "bak_key": target_key,
+                                "reason": "modified_non_chunk",
+                                "size": pri_item["size"],
+                            })
                 else:
                     # 通用文件比对：大小与 ETag 一致跳过；否则待同步
                     if pri_item["size"] == bak_item["size"] and (not pri_item.get("etag") or not bak_item.get("etag") or pri_item["etag"] == bak_item["etag"]):
@@ -964,6 +1070,10 @@ class S3SourceManager:
             for rel in bak_map:
                 if rel not in pri_map:
                     retained.append(rel)
+
+            if is_siyuan:
+                # 关键排序保证：数据块排在最前面传输，指针与清单文件（如 latest, manifest）强制排在最后传输！
+                to_sync.sort(key=lambda x: (1 if is_siyuan_pointer(x["rel_path"]) else 0, x["rel_path"]))
 
             strategy_name = "siyuan_block_mirror" if is_siyuan else "safe_add_only"
 
@@ -1027,6 +1137,7 @@ class S3SourceManager:
 
             return {
                 "success": True,
+                "status": "success",
                 "is_demo": True,
                 "mode": "apply" if apply else "dry-run",
                 "tag": comp["tag"],
@@ -1034,6 +1145,9 @@ class S3SourceManager:
                 "primary": pri,
                 "backup": bak,
                 "synced_objects": to_sync if apply else 0,
+                "synced_bytes": 0,
+                "failed_count": 0,
+                "failed_objects": [],
                 "pending_objects": to_sync,
                 "logs": logs,
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1058,39 +1172,59 @@ class S3SourceManager:
 
         synced_count = 0
         synced_bytes = 0
+        failed_objects = []
         pending_details = comp.get("pending_details", [])
 
         if apply:
             for item in pending_details:
+                rel = item["rel_path"]
+                pri_k = item["pri_key"]
+                bak_k = item["bak_key"]
                 try:
-                    rel = item["rel_path"]
-                    pri_k = item["pri_key"]
-                    bak_k = item["bak_key"]
-                    data, ctype = pri_client.get_object(pri_k)
-                    bak_client.put_object(bak_k, data, content_type=ctype)
+                    if hasattr(pri_client, "transfer_to"):
+                        nbytes, _ = pri_client.transfer_to(pri_k, bak_client, bak_k, max_retries=3)
+                    else:
+                        data, ctype = pri_client.get_object(pri_k)
+                        bak_client.put_object(bak_k, data, content_type=ctype)
+                        nbytes = len(data)
                     synced_count += 1
-                    synced_bytes += len(data)
-                    logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] -> 写入成功: {rel} ({len(data)} 字节)")
+                    synced_bytes += nbytes
+                    logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] -> 写入成功: {rel} ({nbytes} 字节)")
                 except Exception as e:
-                    logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ 写入失败: {item.get('rel_path')} - {str(e)}")
+                    failed_objects.append({
+                        "rel_path": rel,
+                        "pri_key": pri_k,
+                        "bak_key": bak_k,
+                        "error": str(e)
+                    })
+                    logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ 写入失败: {rel} - {str(e)}")
 
-            logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ 跨桶数据同步完成，成功传输 {synced_count}/{len(pending_details)} 个对象，共 {round(synced_bytes / 1024 / 1024, 2)} MB。")
+            is_all_success = (len(failed_objects) == 0)
+            status = "success" if is_all_success else ("partial" if synced_count > 0 else "error")
 
-            # 更新数据源状态
-            for s in self._sources:
-                if s["id"] == backup_id:
-                    s["objects_count"] = pri["objects_count"]
-                    s["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                elif s["id"] == primary_id:
-                    s["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-            self.save()
+            if is_all_success:
+                logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ 跨桶数据同步完成，成功传输 {synced_count}/{len(pending_details)} 个对象，共 {round(synced_bytes / 1024 / 1024, 2)} MB。")
+                # 仅在全量成功时更新数据源对象计数与同步时间
+                for s in self._sources:
+                    if s["id"] == backup_id:
+                        s["objects_count"] = pri["objects_count"]
+                        s["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    elif s["id"] == primary_id:
+                        s["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                self.save()
+            else:
+                logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ 跨桶数据同步未完全成功：成功传输 {synced_count}/{len(pending_details)} 个对象，失败 {len(failed_objects)} 个。备桶状态保留，请检查网络或配置后重试。")
         else:
             logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] （只读预览模式，未发生任何实际数据写入）")
             for rel in comp.get("sample_pending_files", []):
                 logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] -> 待同步预览: {rel}")
 
+        is_all_success = (len(failed_objects) == 0) if apply else True
+        status = "success" if is_all_success else ("partial" if synced_count > 0 else "error")
+
         return {
-            "success": True,
+            "success": is_all_success,
+            "status": status,
             "is_demo": False,
             "mode": "apply" if apply else "dry-run",
             "tag": comp["tag"],
@@ -1099,6 +1233,8 @@ class S3SourceManager:
             "backup": bak,
             "synced_objects": synced_count if apply else 0,
             "synced_bytes": synced_bytes,
+            "failed_count": len(failed_objects),
+            "failed_objects": failed_objects,
             "pending_objects": to_sync,
             "logs": logs,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

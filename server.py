@@ -48,6 +48,7 @@ S3_SOURCES_FILE = DATA_DIR / "s3-sources.json"
 SCHEDULES_FILE = DATA_DIR / "schedules.json"
 STATE_FILE = BASE_DIR / "bw-sync-state.json"
 CONFIG_FILE = BASE_DIR / "config.json"
+API_TOKEN = os.environ.get("CLOUDMIRROR_API_TOKEN", "").strip()
 
 PROFILES_CONFIG = {
     "prod": {
@@ -386,7 +387,10 @@ def background_scheduler_worker():
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
             for sched in schedule_manager._schedules:
                 if sched.get("enabled") and sched.get("next_run") and sched.get("next_run") <= now_str:
+                    t0 = time.time()
                     res = schedule_manager.trigger_schedule(sched["id"])
+                    elapsed = round(time.time() - t0, 2)
+                    is_real = not res.get("is_demo", False)
                     if res.get("success"):
                         datastore.add_task({
                             "id": f"task-sched-{int(time.time())}",
@@ -395,9 +399,10 @@ def background_scheduler_worker():
                             "mode": "schedule-apply",
                             "sources": [sched.get("primary_name", "主桶"), sched.get("backup_name", "备桶")],
                             "status": "success",
+                            "is_real": is_real,
                             "summary": f"定时同步完成，更新 {res.get('synced_objects', 0)} 个笔记对象",
                             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "duration_s": 1.5,
+                            "duration_s": elapsed,
                         })
                     else:
                         datastore.add_task({
@@ -407,9 +412,10 @@ def background_scheduler_worker():
                             "mode": "schedule-apply",
                             "sources": [sched.get("primary_name", "主桶"), sched.get("backup_name", "备桶")],
                             "status": "error",
+                            "is_real": is_real,
                             "summary": f"定时同步执行失败: {res.get('message', '未知错误')}",
                             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "duration_s": 0.5,
+                            "duration_s": elapsed,
                         })
         except Exception as e:
             try:
@@ -681,11 +687,22 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def check_auth(self) -> bool:
+        global API_TOKEN
+        if not API_TOKEN:
+            return True
+        auth_hdr = self.headers.get("Authorization", "").strip()
+        token_hdr = self.headers.get("X-API-Token", "").strip()
+        bearer_token = ""
+        if auth_hdr.lower().startswith("bearer "):
+            bearer_token = auth_hdr[7:].strip()
+        return (bearer_token == API_TOKEN) or (token_hdr == API_TOKEN)
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Token")
         self.end_headers()
 
     def do_GET(self):
@@ -693,6 +710,9 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
         path = parsed.path
 
         if path.startswith("/api/"):
+            if not self.check_auth():
+                self.send_json({"success": False, "error": "Unauthorized: API token missing or invalid"}, status=401)
+                return
             self.handle_api_get(path, parse_qs(parsed.query))
             return
 
@@ -913,6 +933,10 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path
+
+        if path.startswith("/api/") and not self.check_auth():
+            self.send_json({"success": False, "error": "Unauthorized: API token missing or invalid"}, status=401)
+            return
 
         content_len = int(self.headers.get("Content-Length", 0))
         raw_body = self.rfile.read(content_len).decode("utf-8") if content_len > 0 else "{}"
@@ -1292,18 +1316,35 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
             apply_mode = bool(body.get("apply", True))
             strategy = body.get("strategy", "safe_add_only")
 
+            t0 = time.time()
             res = s3_manager.sync_pair(primary_id, backup_id, tag=tag, apply=apply_mode, strategy=strategy)
-            if res.get("success"):
+            elapsed = round(time.time() - t0, 2)
+            if res.get("primary") and res.get("backup"):
+                is_demo = res.get("is_demo", False)
+                status = res.get("status", "success" if res.get("success") else "error")
+                failed_cnt = res.get("failed_count", 0)
+                prefix_label = "【模拟演示】" if is_demo else "【真实S3】"
+                if apply_mode:
+                    if status == "success":
+                        summary = f"成功写入 {res.get('synced_objects', 0)} 个增量笔记文件至备桶"
+                    elif status == "partial":
+                        summary = f"部分写入完成：成功 {res.get('synced_objects', 0)} 个，失败 {failed_cnt} 个"
+                    else:
+                        summary = f"写入失败：{failed_cnt} 个对象传输错误"
+                else:
+                    summary = f"只读比对发现 {res.get('pending_objects', 0)} 个待同步笔记文件"
+
                 datastore.add_task({
                     "id": f"task-s3-pair-{int(time.time())}",
-                    "title": f"S3 主备同步 [{tag}] ({res['primary']['name']} -> {res['backup']['name']})",
+                    "title": f"{prefix_label} S3 主备同步 [{tag}] ({res['primary']['name']} -> {res['backup']['name']})",
                     "type": "s3",
                     "mode": "apply" if apply_mode else "dry-run",
                     "sources": [res['primary']['name'], res['backup']['name']],
-                    "status": "success",
-                    "summary": f"{'完成同步' if apply_mode else '比对发现'} {res['pending_objects']} 个增量笔记文件",
+                    "status": status,
+                    "is_real": not is_demo,
+                    "summary": summary,
                     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "duration_s": 1.8,
+                    "duration_s": elapsed,
                 })
             self.send_json(res)
 
@@ -1322,10 +1363,12 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
             logs = [
                 f"[{datetime.now().strftime('%H:%M:%S')}] 启动多源 S3 同步任务 (主源: {primary['name']})",
             ]
+            t0 = time.time()
             for tgt in targets:
                 comp = s3_manager.sync_pair(primary["id"], tgt["id"], apply=True)
                 total_synced += comp.get("synced_objects", 0)
                 logs.extend(comp.get("logs", []))
+            elapsed = round(time.time() - t0, 2)
 
             datastore.add_task({
                 "id": f"task-s3-multi-{int(time.time())}",
@@ -1336,7 +1379,7 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
                 "status": "success",
                 "summary": f"主源广播同步至 {len(targets)} 个备桶，共处理 {total_synced} 项笔记文件",
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "duration_s": 2.3,
+                "duration_s": elapsed,
             })
             self.send_json({
                 "success": True,
@@ -1541,6 +1584,10 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
+        if path.startswith("/api/") and not self.check_auth():
+            self.send_json({"success": False, "error": "Unauthorized: API token missing or invalid"}, status=401)
+            return
+
         if path.startswith("/api/bitwarden/sources/"):
             source_id = path.split("/")[-1]
             ok = datastore.delete_bw_source(source_id)
@@ -1564,9 +1611,18 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "Unknown API route"}, status=404)
 
 
-def run_server(host: str = "0.0.0.0", port: int = 8765):
-    server = HttpServerClass((host, port), CloudMirrorHandler)
-    print(f"CloudMirror Web Server started at http://{host}:{port}")
+def run_server(host: Optional[str] = None, port: int = 8765, token: Optional[str] = None):
+    global API_TOKEN
+    default_host = os.environ.get("CLOUDMIRROR_HOST", "0.0.0.0").strip()
+    bind_host = host or default_host
+    if token is not None:
+        API_TOKEN = token.strip()
+    server = HttpServerClass((bind_host, port), CloudMirrorHandler)
+    print(f"CloudMirror Web Server started at http://{bind_host}:{port}")
+    if API_TOKEN:
+        print("🔐 API Token 鉴权已启用 (CLOUDMIRROR_API_TOKEN)")
+    else:
+        print("⚠️ 未启用 API Token 鉴权 (可通过 CLOUDMIRROR_API_TOKEN 启用)")
     print(f"Serving UI from {WEB_DIR}")
     try:
         server.serve_forever()
@@ -1577,7 +1633,9 @@ def run_server(host: str = "0.0.0.0", port: int = 8765):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CloudMirror Web Console Server")
-    parser.add_argument("--host", default="0.0.0.0", help="Listen host (default 0.0.0.0)")
+    default_host = os.environ.get("CLOUDMIRROR_HOST", "0.0.0.0").strip()
+    parser.add_argument("--host", default=default_host, help=f"Listen host (default {default_host})")
     parser.add_argument("--port", type=int, default=8765, help="Listen port (default 8765)")
+    parser.add_argument("--token", default=None, help="API Authentication Token (overrides CLOUDMIRROR_API_TOKEN)")
     args = parser.parse_args()
-    run_server(args.host, args.port)
+    run_server(args.host, args.port, token=args.token)

@@ -1735,6 +1735,7 @@ async function handlePairSync() {
   const primaryId = DOM.pairPrimarySelect.value;
   const backupId = DOM.pairBackupSelect.value;
   const tag = state.activePairTag;
+  const isDryRun = document.getElementById('s3-sync-dryrun-toggle')?.checked ?? false;
 
   if (!primaryId || !backupId || primaryId === backupId) {
     showToast('请选择两个不同的存储桶进行同步', 'error');
@@ -1744,30 +1745,40 @@ async function handlePairSync() {
   const primaryObj = state.s3Sources.find(s => s.id === primaryId);
   const backupObj = state.s3Sources.find(s => s.id === backupId);
 
-  DOM.syncLogs.textContent = `[${new Date().toLocaleTimeString()}] 启动 S3 主备增量同步 (写入备桶)...\n` +
-    `标签: [${tag}] | 主桶: ${primaryObj?.name || primaryId} ➡️ 备桶: ${backupObj?.name || backupId}\n`;
+  DOM.syncLogs.textContent = `[${new Date().toLocaleTimeString()}] 启动 S3 主备${isDryRun ? '只读预览比对 (Dry-Run)' : '增量同步 (写入备桶)'}...\n` +
+    `模式: [${isDryRun ? '只读预览' : '执行写入'}] | 标签: [${tag}] | 主桶: ${primaryObj?.name || primaryId} ➡️ 备桶: ${backupObj?.name || backupId}\n`;
 
   try {
     const res = await fetch('/api/s3/pair/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ primary_id: primaryId, backup_id: backupId, tag, apply: true })
+      body: JSON.stringify({ primary_id: primaryId, backup_id: backupId, tag, apply: !isDryRun })
     });
     const data = await res.json();
-    if (data.success) {
-      if (DOM.diffSummary) {
-        DOM.diffSummary.style.display = 'grid';
-        DOM.diffCountIdentical.textContent = data.identical_count || 0;
-        DOM.diffCountAdd.textContent = data.synced_objects || 0;
-        DOM.diffCountConflict.textContent = 0;
-        DOM.diffCountTombstone.textContent = 0;
-      }
-
-      DOM.syncLogs.textContent = data.logs.join('\n');
-      showToast(`主备同步完成！已写入 ${data.synced_objects} 个笔记对象至备桶`, 'success');
-      await fetchS3Sources();
-      await fetchTasks();
+    if (DOM.diffSummary) {
+      DOM.diffSummary.style.display = 'grid';
+      DOM.diffCountIdentical.textContent = data.identical_count || 0;
+      DOM.diffCountAdd.textContent = data.synced_objects || 0;
+      DOM.diffCountConflict.textContent = data.failed_count || 0;
+      DOM.diffCountTombstone.textContent = 0;
     }
+
+    if (data.logs) {
+      DOM.syncLogs.textContent = data.logs.join('\n');
+    }
+
+    if (isDryRun) {
+      showToast(`只读预览完成：待同步增量 ${data.pending_objects || 0} 个对象 (未发生写入)`, 'info');
+    } else if (data.status === 'partial') {
+      showToast(`主备同步部分完成：成功 ${data.synced_objects} 个，失败 ${data.failed_count} 个`, 'warning');
+    } else if (data.success) {
+      showToast(`主备同步完成！已写入 ${data.synced_objects} 个笔记对象至备桶`, 'success');
+    } else {
+      showToast(`主备同步失败：${data.message || '写入错误'}`, 'error');
+    }
+
+    await fetchS3Sources();
+    await fetchTasks();
   } catch (err) {
     DOM.syncLogs.textContent += `\n[错误] 同步执行失败: ${err.message}`;
     showToast('同步执行失败', 'error');
@@ -2672,14 +2683,22 @@ function renderTasksTable() {
   state.tasks.forEach(task => {
     const tr = document.createElement('tr');
     tr.style.cssText = 'border-bottom:1px solid var(--border-subtle);';
+    const realBadge = task.is_real
+      ? '<span class="badge" style="background:rgba(16,185,129,0.15); color:#34d399; border:1px solid rgba(16,185,129,0.4); margin-left:6px; font-size:0.7rem;">🟢 真实</span>'
+      : '<span class="badge" style="background:rgba(234,179,8,0.15); color:#facc15; border:1px solid rgba(234,179,8,0.4); margin-left:6px; font-size:0.7rem;">🟡 模拟</span>';
+    const statusBadge = task.status === 'success'
+      ? '<span class="badge badge-vault" style="margin-right:6px;">成功</span>'
+      : (task.status === 'partial'
+        ? '<span class="badge" style="background:rgba(249,115,22,0.15); color:#fb923c; border:1px solid rgba(249,115,22,0.4); margin-right:6px;">部分完成</span>'
+        : '<span class="badge badge-node" style="margin-right:6px;">失败</span>');
     tr.innerHTML = `
       <td style="padding:10px 14px; font-family:var(--font-mono); font-size:0.78rem; color:#38bdf8;">${task.id}</td>
-      <td style="padding:10px 14px;"><span class="badge ${task.type === 'bitwarden' ? 'badge-vault' : 'badge-custom'}">${task.type}</span></td>
+      <td style="padding:10px 14px;"><span class="badge ${task.type === 'bitwarden' ? 'badge-vault' : 'badge-custom'}">${task.type}</span>${realBadge}</td>
       <td style="padding:10px 14px;"><span class="badge ${task.mode === 'apply' ? 'badge-node' : 'badge-official'}">${task.mode}</span></td>
       <td style="padding:10px 14px; font-size:0.8rem;">${escapeHTML(task.sources.join(' ↔ '))}</td>
-      <td style="padding:10px 14px; font-size:0.8rem; color:var(--text-muted);">${escapeHTML(task.summary)}</td>
+      <td style="padding:10px 14px; font-size:0.8rem; color:var(--text-muted);">${statusBadge}${escapeHTML(task.summary)}</td>
       <td style="padding:10px 14px; font-family:var(--font-mono); font-size:0.75rem; color:var(--text-dim);">${task.timestamp}</td>
-      <td style="padding:10px 14px; text-align:right; font-family:var(--font-mono); font-size:0.78rem;">${task.duration_s || 1.0}s</td>
+      <td style="padding:10px 14px; text-align:right; font-family:var(--font-mono); font-size:0.78rem;">${task.duration_s != null ? task.duration_s : 1.0}s</td>
     `;
     DOM.auditTableBody.appendChild(tr);
   });
@@ -2691,14 +2710,22 @@ function renderDashboardRecentTasks() {
   state.tasks.slice(0, 3).forEach(task => {
     const el = document.createElement('div');
     el.style.cssText = 'padding:12px 16px; background:rgba(255,255,255,0.03); border:1px solid var(--border-subtle); border-radius:8px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;';
+    const realBadge = task.is_real
+      ? '<span class="badge" style="background:rgba(16,185,129,0.15); color:#34d399; border:1px solid rgba(16,185,129,0.4); font-size:0.68rem; margin-left:6px;">🟢 真实</span>'
+      : '<span class="badge" style="background:rgba(234,179,8,0.15); color:#facc15; border:1px solid rgba(234,179,8,0.4); font-size:0.68rem; margin-left:6px;">🟡 模拟</span>';
+    const statusBadge = task.status === 'success'
+      ? '<span class="badge badge-vault">成功</span>'
+      : (task.status === 'partial'
+        ? '<span class="badge" style="background:rgba(249,115,22,0.15); color:#fb923c; border:1px solid rgba(249,115,22,0.4);">部分完成</span>'
+        : '<span class="badge badge-node">失败</span>');
     el.innerHTML = `
       <div>
-        <div style="font-weight:600; font-size:0.88rem;">${escapeHTML(task.title)}</div>
+        <div style="font-weight:600; font-size:0.88rem; display:flex; align-items:center;">${escapeHTML(task.title)}${realBadge}</div>
         <div style="font-size:0.75rem; color:var(--text-muted); margin-top:2px;">${escapeHTML(task.summary)}</div>
       </div>
       <div style="text-align:right;">
-        <span class="badge ${task.status === 'success' ? 'badge-vault' : 'badge-node'}">${task.status}</span>
-        <div style="font-size:0.72rem; color:var(--text-dim); margin-top:4px; font-family:var(--font-mono);">${task.timestamp}</div>
+        ${statusBadge}
+        <div style="font-size:0.72rem; color:var(--text-dim); margin-top:4px; font-family:var(--font-mono);">${task.timestamp} (${task.duration_s || 0}s)</div>
       </div>
     `;
     DOM.recentTasks.appendChild(el);

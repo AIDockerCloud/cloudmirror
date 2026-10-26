@@ -1,13 +1,13 @@
 ---
 pcmp_version: "2.2"
-revision: 13
-updated: 2026-10-26
+revision: 14
+updated: 2026-10-27
 ---
 
 # 项目当前状态快照 (STATE.md)
 
-- **Last Updated**: 2026-10-26
-- **Overall Status**: cloudmirror 已圆满完成 P0、P1 与 P2 阶段全部改进：S3 全链路标 DEMO、Bitwarden 同步互斥锁 (409)、State 物理隔离（P0 已推送到远程）；冲突副本重试去重、ThreadingHTTPServer 多线程容器、调度器审计留痕与 02:00 真实时间计算、彻底废除明文密码回退分支（P1 已推送到远程）；基于 Python 3 原生标准库零 pip 依赖的轻量级真实 S3 客户端（`RealS3Client`，含完整 AWS SigV4 签名计算、ListObjectsV2 ContinuationToken 翻页、GetObject、PutObject、HeadObject）、思源笔记不可变块单向镜像策略（同大小跳过覆写、零硬删除保留孤立块）及 S3 环境变量凭据注入（P2 全部完成）。自测 12/12 组、单元测试扩充至 43 项全过，PCMP 检查 0 错误 0 警告。工作区准备就绪，待人类开发者推送到远程。
+- **Last Updated**: 2026-10-27
+- **Overall Status**: cloudmirror 已圆满完成 Bitwarden 文件夹维度去重判重与自然键隔离、S3 部分失败真实语义修复、大对象流式传输与指数退避重试、思源笔记指针后置与块判定收窄、前端 Dry-Run 只读开关与真实/模拟角标、API Token 服务端鉴权与精确实测计时（DEC-012）。自测 12/12 组、单元测试扩充至 51 项全过，PCMP 合规自检 0 错误 0 警告。
 
 ## 已完成 (Completed)
 - [已确认] 完成核心同步脚本 `bw_sync.py` 编写，实现条目规范化、SHA-256 哈希判等、自然键配对与“只增不改不删”状态机。
@@ -24,17 +24,20 @@ updated: 2026-10-26
 - [已确认] [DEC-008] 确立项目名称+账号独立条目判定、自动填充选项多URI顺序无关规范化、哈希优先1-to-1精确配对与回收站联动感知防复活机制，真实生产库歧义组成功清零。
 - [已确认] [DEC-009] 确立 S3 模块全链路显式标 DEMO、Bitwarden 同步互斥锁 (409) 与 State 文件物理隔离机制（P0 已推送到远程）。
 - [已确认] [DEC-010] 确立冲突副本重试去重、多线程 Web 容器、调度器审计留痕与密码环境变量严格化（P1 已推送到远程）。
-- [已确认] [DEC-011] 确立原生 AWS SigV4 S3 客户端、思源笔记不可变镜像与环境变量凭据注入：
-  - 基于 Python 3 原生标准库实现 `RealS3Client`，包含 AWS SigV4 认证、`ListObjectsV2`（`ContinuationToken` 翻页）、`GetObject`、`PutObject`、`HeadObject` 与 XML 错误解析；
-  - 思源笔记不可变块镜像模式：相同大小哈希块跳过覆写、增量补齐缺失/修改块、备桶单边孤立块安全保留（零硬删除）；
-  - S3 凭据环境变量注入：支持 `access_key_env` 与 `secret_key_env`，`.env.example` 扩展模板，前端界面与配置表单无缝联动；
-  - 数据源未配置真实密钥时平滑处于 DEMO 保护模式，配置后即时无缝切换为真实 S3 引擎。
-- [已确认] 自动化测试套件扩充至 43 项（`tests/test_pcmp_index.py`、`tests/test_bw_sync.py`、`tests/test_s3_sync.py`、`tests/test_server.py`），100% 通过。
+- [已确认] [DEC-011] 确立原生 AWS SigV4 S3 客户端、思源笔记不可变镜像与环境变量凭据注入（P2 全部完成）。
+- [已确认] [DEC-012] 确立 Bitwarden 文件夹维度去重与自然键隔离、S3 部分失败真实语义、流式重试与前端 Dry-Run 控制：
+  - Bitwarden 去重判重键与自然键纳入 `folder`，消除跨工作/个人文件夹同密码误报重复与错配；`has_existing_conflict_copy` 修正为全 marker 前缀精确匹配；
+  - `s3_sync.py:sync_pair` 部分失败返回 `status: "partial"` 且 `success: False`，严禁虚报覆盖备桶对象数目；
+  - `RealS3Client.transfer_to` 基于 8MB 内存/临时文件分块流式直传，防 OOM，集成 3 次失败指数退避重试；
+  - 思源笔记仅 `data/*.sy` 走大小判定，`latest` 与 `assets/` 等走大小+ETag 复合校验；对象传输先数据块后引用指针；
+  - 前端 S3 控制台增加只读预览 (Dry-Run) 复选框并传递 `apply` 参数；任务列表与仪表盘显式渲染 `🟢 真实` 与 `🟡 模拟` 角标；
+  - 服务端支持 `CLOUDMIRROR_API_TOKEN` / `--token` 鉴权与指定 host 绑定，记录实测秒级 `duration_s`。
+- [已确认] 自动化测试套件扩充至 51 项（`tests/test_pcmp_index.py`、`tests/test_bw_sync.py`、`tests/test_s3_sync.py`、`tests/test_server.py`），100% 通过。
 - [已确认] 运行 `python3 bw_sync.py --selftest`，12 组场景离线自测全部通过。
 - [已确认] 运行 `python3 scripts/pcmp_index.py --check` 与 `--update`，0 错误 0 警告，派生索引已同步。
 
 ## 进行中 (In Progress)
-- [P2 收尾] 提交 P2 阶段改动至 Git，等待人类开发者推送到远程。
+- [代码与测试完成] 待人类开发者核对并提交推送至远程。
 
 ## 阻塞项 (Blocked)
 - 无
@@ -43,4 +46,5 @@ updated: 2026-10-26
 - **Git 远程推送认证**：环境需用户交互凭据推送。
 
 ## 下一步即时动作 (Immediate Next Action)
-- 提交 P2 改动，并向人类开发者输出 STC 规范汇报。
+- 输出 STC 规范汇报供人类开发者确认。
+
