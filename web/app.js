@@ -3,6 +3,81 @@
  * Zero external framework dependencies - Pure Modern JavaScript
  */
 
+// ==================== API TOKEN MANAGEMENT & FETCH INTERCEPTOR ====================
+const TOKEN_STORAGE_KEY = 'cloudmirror_api_token';
+
+function getStoredApiToken() {
+  return localStorage.getItem(TOKEN_STORAGE_KEY) || sessionStorage.getItem(TOKEN_STORAGE_KEY) || '';
+}
+
+function setStoredApiToken(token, remember = true) {
+  if (token) {
+    if (remember) {
+      localStorage.setItem(TOKEN_STORAGE_KEY, token);
+      sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    } else {
+      sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+    }
+  } else {
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
+    sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+  }
+  updateTopBarTokenUI();
+}
+
+function updateTopBarTokenUI() {
+  const dot = document.getElementById('topbar-token-dot');
+  const text = document.getElementById('topbar-token-text');
+  const token = getStoredApiToken();
+  if (dot && text) {
+    if (token) {
+      dot.style.background = '#10b981';
+      dot.style.boxShadow = '0 0 8px rgba(16,185,129,0.6)';
+      text.textContent = '🔑 Token 已配置';
+      text.style.color = '#10b981';
+    } else {
+      dot.style.background = '#64748b';
+      dot.style.boxShadow = 'none';
+      text.textContent = '🔑 Token';
+      text.style.color = 'var(--text-secondary)';
+    }
+  }
+}
+
+// Global fetch wrapper for automatic Bearer token injection and 401 handling
+const _nativeFetch = window.fetch;
+window.fetch = async function (resource, init) {
+  const url = typeof resource === 'string' ? resource : (resource && resource.url ? resource.url : '');
+  const token = getStoredApiToken();
+
+  if (token && typeof url === 'string' && url.startsWith('/api/')) {
+    init = init || {};
+    init.headers = init.headers || {};
+    if (init.headers instanceof Headers) {
+      if (!init.headers.has('Authorization')) {
+        init.headers.set('Authorization', `Bearer ${token}`);
+      }
+    } else if (Array.isArray(init.headers)) {
+      init.headers.push(['Authorization', `Bearer ${token}`]);
+    } else {
+      if (!init.headers['Authorization']) {
+        init.headers['Authorization'] = `Bearer ${token}`;
+      }
+    }
+  }
+
+  const response = await _nativeFetch.apply(this, arguments);
+
+  if (response.status === 401 && typeof url === 'string' && url.startsWith('/api/')) {
+    if (typeof openTokenModal === 'function') {
+      openTokenModal(true);
+    }
+  }
+
+  return response;
+};
+
 // Application State
 const state = {
   activeTab: 'dashboard',
@@ -48,6 +123,8 @@ function initDOMElements() {
   DOM.pageSubtitle = document.getElementById('page-subtitle');
   DOM.tabViews = document.querySelectorAll('.tab-view');
   DOM.toastContainer = document.getElementById('toast-container');
+  DOM.modalToken = document.getElementById('modal-token-settings');
+  updateTopBarTokenUI();
 
   // Stats
   DOM.statBwCount = document.getElementById('stat-bw-count');
@@ -3302,7 +3379,50 @@ function initModals() {
   document.getElementById('btn-close-s3-modal')?.addEventListener('click', () => closeModal(DOM.modalS3));
   document.getElementById('btn-cancel-s3-modal')?.addEventListener('click', () => closeModal(DOM.modalS3));
 
-  // Explicit modal close buttons only: clicking outside/backdrop will NOT exit edit modal.
+  // Token Modal
+  document.getElementById('topbar-token-btn')?.addEventListener('click', () => openTokenModal(false));
+  document.getElementById('btn-close-token-modal')?.addEventListener('click', () => closeModal(DOM.modalToken));
+  document.getElementById('btn-cancel-token-modal')?.addEventListener('click', () => closeModal(DOM.modalToken));
+
+  document.getElementById('btn-save-api-token')?.addEventListener('click', () => {
+    const input = document.getElementById('input-api-token');
+    const remember = document.getElementById('token-remember-local')?.checked ?? true;
+    const token = (input?.value || '').trim();
+    setStoredApiToken(token, remember);
+    closeModal(DOM.modalToken);
+    showToast(token ? 'API Token 已保存并生效' : 'API Token 已清空', 'success');
+    loadAllData();
+  });
+
+  document.getElementById('btn-clear-api-token')?.addEventListener('click', () => {
+    setStoredApiToken('', true);
+    const input = document.getElementById('input-api-token');
+    if (input) input.value = '';
+    closeModal(DOM.modalToken);
+    showToast('API Token 已清除', 'info');
+    loadAllData();
+  });
+
+  let tokenPwVisible = false;
+  document.getElementById('btn-toggle-token-visibility')?.addEventListener('click', () => {
+    tokenPwVisible = !tokenPwVisible;
+    const input = document.getElementById('input-api-token');
+    if (input) input.type = tokenPwVisible ? 'text' : 'password';
+  });
+}
+
+function openTokenModal(isAuthError = false) {
+  const modal = DOM.modalToken || document.getElementById('modal-token-settings');
+  const warning = document.getElementById('token-auth-warning');
+  const input = document.getElementById('input-api-token');
+  if (warning) {
+    warning.style.display = isAuthError ? 'block' : 'none';
+  }
+  if (input) {
+    input.value = getStoredApiToken();
+    input.type = 'password';
+  }
+  openModal(modal);
 }
 
 function openModal(modalEl) {
@@ -3507,7 +3627,16 @@ function renderDedupeResults(result) {
   emptyEl.style.display = 'none';
   resultsContainer.style.display = 'block';
   groupsList.innerHTML = '';
-  summaryText.textContent = `⚠️ 检测到 ${result.duplicate_groups_count} 组重复数据，共 ${result.duplicate_items_count} 个冗余副本可清理（每组安全保留 1 份原件）`;
+  function formatDedupeDate(dStr) {
+    if (!dStr) return '';
+    try {
+      return dStr.replace('T', ' ').replace(/\.\d+Z$/, '').replace('Z', '').slice(0, 16);
+    } catch (e) {
+      return dStr;
+    }
+  }
+
+  summaryText.textContent = `⚠️ 检测到 ${result.duplicate_groups_count} 组重复数据，共 ${result.duplicate_items_count} 个冗余副本可清理（每组严格保留最早录入的原件）`;
   cleanCount.textContent = result.duplicate_items_count;
   cleanBtn.style.display = 'inline-flex';
 
@@ -3526,6 +3655,7 @@ function renderDedupeResults(result) {
             <span class="badge badge-danger" style="font-size:0.7rem;">待清理冗余副本</span>
             <span style="font-weight:600; font-size:0.84rem; color:var(--text-main);">${escapeHTML(dup.name)}</span>
             <span style="font-size:0.75rem; color:var(--text-dim); font-family:var(--font-mono);">(ID: ${escapeHTML(dup.id)})</span>
+            ${dup.creationDate ? `<span style="font-size:0.73rem; color:var(--text-muted); margin-left:4px;" title="录入时间">📅 录入: ${escapeHTML(formatDedupeDate(dup.creationDate))}</span>` : ''}
           </div>
           <span style="font-size:0.75rem; color:var(--text-muted);">${dup.folder ? `📁 ${escapeHTML(dup.folder)}` : '根目录'}</span>
         </div>
@@ -3539,15 +3669,16 @@ function renderDedupeResults(result) {
           <span style="font-size:0.82rem; color:var(--text-secondary);">👤 ${escapeHTML(group.username || '未填账号')}</span>
           <span style="font-size:0.82rem; color:var(--text-muted); font-family:var(--font-mono);">🔑 <span class="dedupe-pw-text" data-pw="${escapeHTML(group.password)}">${pwDisplay}</span></span>
         </div>
-        <span class="badge badge-official" style="font-size:0.72rem;">共 ${group.total_count} 个完全一致条目</span>
+        <span class="badge badge-official" style="font-size:0.72rem;">共 ${group.total_count} 个同文件夹完全重复条目</span>
       </div>
 
       <!-- Keep Item -->
       <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 12px; background:rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.25); border-radius:6px; margin-bottom:6px;">
         <div style="display:flex; align-items:center; gap:8px;">
-          <span class="badge badge-vault" style="font-size:0.7rem;">🟢 保留原件</span>
+          <span class="badge badge-vault" style="font-size:0.7rem;">🟢 保留最早录入原件</span>
           <span style="font-weight:600; font-size:0.84rem; color:var(--text-main);">${escapeHTML(group.keep.name)}</span>
           <span style="font-size:0.75rem; color:var(--text-dim); font-family:var(--font-mono);">(ID: ${escapeHTML(group.keep.id)})</span>
+          ${group.keep.creationDate ? `<span style="font-size:0.73rem; color:#10b981; margin-left:4px;" title="最早录入时间">📅 录入: ${escapeHTML(formatDedupeDate(group.keep.creationDate))}</span>` : ''}
           ${group.keep.favorite ? '<span title="已收藏">⭐</span>' : ''}
         </div>
         <span style="font-size:0.75rem; color:var(--text-muted);">${group.keep.folder ? `📁 ${escapeHTML(group.keep.folder)}` : '根目录'}</span>

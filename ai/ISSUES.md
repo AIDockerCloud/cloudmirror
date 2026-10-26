@@ -1,7 +1,7 @@
 ---
 pcmp_version: "2.2"
-revision: 1
-updated: 2026-10-24
+revision: 2
+updated: 2026-10-27
 ---
 
 # 已知问题与技术风险跟踪 (ISSUES.md)
@@ -15,3 +15,6 @@ updated: 2026-10-24
 | ISS-003 | 规划中 | v1 暂未支持条目附件双向自动迁移，仅在报告中提示带附件条目 | 低 | 条目同步引擎 | 脚本在报告中明确点名带附件的条目清单，由用户在 Web 界面手动上传或待 v2 考虑扩展支持 |
 | ISS-004 | 规划中 | 登录项中的 Passkey (FIDO2) 凭据当前同步时自动剔除 | 低 | 凭证规范化 | 符合安全规范：Passkey 强绑定端侧公私钥体系，两端应独立向目标网站发起 Passkey 登记 |
 | ISS-005 | 已解决 | 仓库缺少 `config.example.json` 与 `.env.example` 导致新环境无法直接按 README 配置 | 低 | 样板配置 | 在 PCMP 初始化过程中补齐两份完整的示例模板文件，并完善注释说明 |
+| ISS-006 | 规划中 | S3 单 PUT 传输上限与大文件断点续传（单 PUT 上限 5GB，超大对象传输失败需整包重试） | 低 | `RealS3Client` / S3传输 | 当前采用 8MB SpooledTemporaryFile 防 OOM + 3 次指数退避重试与 partial 上报；后续大文件场景演进 S3 Multipart Upload 分片续传 |
+| ISS-007 | 已知限制 | 思源笔记 Mirror 运行期间若源端桶发生并发写，可能产生跨版本快照混合 | 低 | `s3_sync.py` / 思源分支 | 当前已通过指针类对象（latest 等）后置传输杜绝坏指针；文档已标明仅在思源笔记空闲时执行 mirror，后续版本规划二次比对快照一致性 |
+

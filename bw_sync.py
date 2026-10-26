@@ -178,12 +178,41 @@ def natural_key(norm):
 
 
 
+def dedupe_content_hash(norm):
+    """
+    计算用于重复项检测的内容哈希：
+    排除 name（项目名称）与 favorite（收藏状态差异），
+    严格比较其余所有数据内容（类型、账号、密码、URIs、TOTP、备注、自定义字段等）。
+    """
+    d = copy.deepcopy(norm)
+    d.pop("name", None)
+    d.pop("favorite", None)
+    d["folder"] = extract_item_folder(norm)
+    blob = json.dumps(d, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def get_item_creation_date(item):
+    """
+    提取条目的最早录入时间，优先使用 creationDate，若缺失则降级使用 revisionDate。
+    """
+    c = item.get("creationDate")
+    if c and isinstance(c, str) and c.strip():
+        return c.strip()
+    r = item.get("revisionDate")
+    if r and isinstance(r, str) and r.strip():
+        return r.strip()
+    return ""
+
+
 def find_duplicates_in_items(items, fname_by_id=None):
     """
-    在单端保险库数据源内部查找完全重复的数据。
-    严格判定标准：必须是域名 (Domain) + 账号 (Username) + 密码 (Password) + 所属文件夹 (Folder) 完全一致。
-    不同文件夹下的相同密码视为合法的跨目录独立副本，不归为重复条目。
-    返回重复分组清单与可清理的副本条目列表（每组安全保留 1 份原件）。
+    在单端保险库数据源内部查找除名称与收藏状态外完全重复的数据。
+    严格判定标准：
+    1. 同一所属文件夹 (Folder)；
+    2. 除名称 (Name) 与收藏状态 (Favorite) 外，其余数据内容（类型、账号、密码、URIs、TOTP、备注、自定义字段等）完全一致；
+    3. 排序策略：严格保留最早录入项（以 creationDate 优先，缺失时降级 revisionDate，时间最早排首位）。
+    返回重复分组清单与可清理的副本条目列表（每组安全保留 1 份最早录入的原件）。
     """
     if fname_by_id is None:
         fname_by_id = {}
@@ -193,50 +222,51 @@ def find_duplicates_in_items(items, fname_by_id=None):
         if item.get("deletedDate") or item.get("organizationId"):
             continue
         norm = normalize_item(item, fname_by_id)
-        itype = norm.get("type", 1)
-        domain = extract_item_domain(norm)
-        username = extract_item_username(norm)
         folder = extract_item_folder(norm)
-        login = item.get("login") or {}
+        login = norm.get("login") or {}
+        username = extract_item_username(norm)
         password = login.get("password") or ""
+        notes = (norm.get("notes") or "").strip()
+        fields = norm.get("fields") or []
 
-        # 仅针对具有域名且具备有效账号或密码的凭据进行去重分组
-        if not domain or (not username and not password):
+        # 仅针对具备实质有效内容（有效账号、密码、备注或自定义字段）的项目进行去重，避免空白条目误碰
+        if not username and not password and not notes and not fields:
             continue
 
-        key = (itype, domain, username, password, folder)
-        groups_map.setdefault(key, []).append((item, norm))
+        content_h = dedupe_content_hash(norm)
+        group_key = (folder, content_h)
+        groups_map.setdefault(group_key, []).append((item, norm))
 
     duplicate_groups = []
     total_duplicate_copies = 0
 
-    for (itype, domain, username, password, folder), item_tuples in groups_map.items():
+    for (folder, content_h), item_tuples in groups_map.items():
         if len(item_tuples) > 1:
-            # 排序规则确定保留原件：优先保留收藏（favorite）、带有较多 fields/notes 的项
-            def sort_key(t):
+            # 排序规则确定保留原件：严格保留最早录入的项目
+            def sort_earliest(t):
                 raw_it, _ = t
-                fav = 1 if raw_it.get("favorite") else 0
-                fields_cnt = len(raw_it.get("fields") or [])
-                notes_len = len(raw_it.get("notes") or "")
-                return (fav, fields_cnt, notes_len)
+                c_date = get_item_creation_date(raw_it)
+                has_date = 0 if c_date else 1
+                return (has_date, c_date, str(raw_it.get("id") or ""))
 
-            sorted_items = sorted(item_tuples, key=sort_key, reverse=True)
+            sorted_items = sorted(item_tuples, key=sort_earliest)
             keep_raw, keep_norm = sorted_items[0]
             dup_raws = [t[0] for t in sorted_items[1:]]
 
             total_duplicate_copies += len(dup_raws)
             duplicate_groups.append({
-                "domain": domain,
-                "username": username,
-                "password": password,
+                "domain": extract_item_domain(keep_norm),
+                "username": extract_item_username(keep_norm),
+                "password": (keep_raw.get("login") or {}).get("password") or "",
                 "folder": folder,
-                "type": itype,
+                "type": keep_norm.get("type", 1),
                 "total_count": len(sorted_items),
                 "keep": {
                     "id": keep_raw.get("id"),
                     "name": keep_raw.get("name") or "(无名)",
                     "folder": fname_by_id.get(keep_raw.get("folderId")),
                     "favorite": bool(keep_raw.get("favorite")),
+                    "creationDate": get_item_creation_date(keep_raw),
                     "revisionDate": keep_raw.get("revisionDate"),
                 },
                 "duplicates": [
@@ -245,6 +275,7 @@ def find_duplicates_in_items(items, fname_by_id=None):
                         "name": d.get("name") or "(无名)",
                         "folder": fname_by_id.get(d.get("folderId")),
                         "favorite": bool(d.get("favorite")),
+                        "creationDate": get_item_creation_date(d),
                         "revisionDate": d.get("revisionDate"),
                     }
                     for d in dup_raws
@@ -1012,15 +1043,15 @@ def selftest():
     check("同一域名不同账号不冲突且各自配对",
           st["pairs"].get("a_gh1") == "b_gh1" and rep["only_a"] == ["GitHub 备用账号"])
 
-    # 场景9：单端数据源内部完全重复数据检测与清理（域名+账号+密码完全一致）
+    # 场景9：单端数据源内部完全重复数据检测与清理（同文件夹、除名称外其他内容一致、保留最早录入原件）
     dup_items = [
-        _item("d1", "V2EX", pw="p123", user="dev", uri="https://v2ex.com", favorite=True),
-        _item("d2", "V2EX 副本", pw="p123", user="dev", uri="https://v2ex.com"),
-        _item("d3", "V2EX 另一账号", pw="p456", user="tester", uri="https://v2ex.com"),
+        _item("d1", "V2EX", pw="p123", user="dev", uri="https://v2ex.com", favorite=True, creationDate="2022-01-01T08:00:00Z"),
+        _item("d2", "V2EX 副本", pw="p123", user="dev", uri="https://v2ex.com", creationDate="2023-01-01T08:00:00Z"),
+        _item("d3", "V2EX 另一账号", pw="p456", user="tester", uri="https://v2ex.com", creationDate="2022-05-01T08:00:00Z"),
     ]
     ca_dup = FakeBwClient("A", dup_items, [])
     dup_res = find_duplicates_in_items(ca_dup.items)
-    check("重复数据识别准确（域名+账号+密码完全一致）",
+    check("重复数据识别准确（同文件夹且除名称与收藏外完全一致，保留最早录入）",
           dup_res["duplicate_groups_count"] == 1 and dup_res["duplicate_items_count"] == 1
           and dup_res["groups"][0]["keep"]["id"] == "d1"
           and dup_res["groups"][0]["duplicates"][0]["id"] == "d2")

@@ -61,17 +61,58 @@ class TestBwSync(unittest.TestCase):
         """Identical credentials in different folders must not be reported as duplicates."""
         fnames = {"f1": "工作", "f2": "个人"}
         # Two items with same domain, username, password but in different folders
-        item_work = bw_sync._item("i1", "GitHub", user="alice", pw="secret", uri="https://github.com", folder_id="f1")
-        item_personal = bw_sync._item("i2", "GitHub", user="alice", pw="secret", uri="https://github.com", folder_id="f2")
+        item_work = bw_sync._item("i1", "GitHub", user="alice", pw="secret", uri="https://github.com", folder_id="f1", creationDate="2022-01-01T00:00:00Z")
+        item_personal = bw_sync._item("i2", "GitHub", user="alice", pw="secret", uri="https://github.com", folder_id="f2", creationDate="2022-02-01T00:00:00Z")
         dup_res = bw_sync.find_duplicates_in_items([item_work, item_personal], fnames)
         self.assertEqual(dup_res["duplicate_groups_count"], 0, "Different folders must not be grouped as duplicates")
         self.assertEqual(dup_res["duplicate_items_count"], 0)
 
-        # Same credentials in same folder must be detected as duplicate
-        item_work_clone = bw_sync._item("i3", "GitHub Clone", user="alice", pw="secret", uri="https://github.com", folder_id="f1")
+        # Same credentials in same folder must be detected as duplicate, keeping earliest
+        item_work_clone = bw_sync._item("i3", "GitHub Clone", user="alice", pw="secret", uri="https://github.com", folder_id="f1", creationDate="2023-01-01T00:00:00Z")
         dup_res_same = bw_sync.find_duplicates_in_items([item_work, item_personal, item_work_clone], fnames)
         self.assertEqual(dup_res_same["duplicate_groups_count"], 1)
         self.assertEqual(dup_res_same["duplicate_items_count"], 1)
+        self.assertEqual(dup_res_same["groups"][0]["keep"]["id"], "i1")
+
+    def test_duplicates_ignore_name_and_favorite_keep_earliest(self):
+        """Duplicate detection ignores name and favorite, strictly checks all other content, and preserves earliest creationDate."""
+        fnames = {"f1": "开发"}
+        # 3 items in same folder:
+        # e1: created 2021-01-01, favorite=False, name="GitLab"
+        # e2: created 2022-06-01, favorite=True,  name="GitLab 冗余备份" (same content)
+        # e3: created 2022-08-01, favorite=False, name="GitLab 生产" (notes different -> not duplicate)
+        e1 = bw_sync._item("e1", "GitLab", user="dev", pw="p99", uri="https://gitlab.com", folder_id="f1", notes="dev notes", creationDate="2021-01-01T00:00:00Z", favorite=False)
+        e2 = bw_sync._item("e2", "GitLab 冗余备份", user="dev", pw="p99", uri="https://gitlab.com", folder_id="f1", notes="dev notes", creationDate="2022-06-01T00:00:00Z", favorite=True)
+        e3 = bw_sync._item("e3", "GitLab 生产", user="dev", pw="p99", uri="https://gitlab.com", folder_id="f1", notes="prod notes", creationDate="2022-08-01T00:00:00Z", favorite=False)
+
+        res = bw_sync.find_duplicates_in_items([e1, e2, e3], fnames)
+        self.assertEqual(res["duplicate_groups_count"], 1)
+        self.assertEqual(res["duplicate_items_count"], 1)
+        # e1 should be kept because its creationDate (2021) is earlier than e2 (2022)
+        group = res["groups"][0]
+        self.assertEqual(group["keep"]["id"], "e1")
+        self.assertEqual(group["keep"]["name"], "GitLab")
+        self.assertEqual(group["duplicates"][0]["id"], "e2")
+        self.assertEqual(group["duplicates"][0]["name"], "GitLab 冗余备份")
+
+    def test_duplicates_distinguish_autofill_uris(self):
+        """Autofill URIs and match modes must be strictly checked to prevent deleting credentials of different websites."""
+        fnames = {"f1": "开发"}
+        # Same user and same password, but different website URIs (e.g. GitHub vs GitLab)
+        gh_item = bw_sync._item("gh1", "GitHub", user="common_user", pw="SecretPass999", uri="https://github.com/login", folder_id="f1")
+        gl_item = bw_sync._item("gl1", "GitLab", user="common_user", pw="SecretPass999", uri="https://gitlab.com/login", folder_id="f1")
+
+        res = bw_sync.find_duplicates_in_items([gh_item, gl_item], fnames)
+        self.assertEqual(res["duplicate_groups_count"], 0, "Different website URIs must never be grouped as duplicates")
+        self.assertEqual(res["duplicate_items_count"], 0)
+
+        # Clone with identical website URI is correctly detected
+        gh_clone = bw_sync._item("gh2", "GitHub 冗余", user="common_user", pw="SecretPass999", uri="https://github.com/login", folder_id="f1")
+        res2 = bw_sync.find_duplicates_in_items([gh_item, gl_item, gh_clone], fnames)
+        self.assertEqual(res2["duplicate_groups_count"], 1)
+        self.assertEqual(res2["duplicate_items_count"], 1)
+        self.assertEqual(res2["groups"][0]["keep"]["id"], "gh1")
+        self.assertEqual(res2["groups"][0]["duplicates"][0]["id"], "gh2")
 
     def test_natural_key_includes_folder(self):
         """Natural key must incorporate folder name to prevent cross-folder clashing."""

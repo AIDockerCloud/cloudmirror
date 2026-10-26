@@ -1,7 +1,7 @@
 ---
 pcmp_version: "2.2"
-revision: 1
-updated: 2026-10-24
+revision: 2
+updated: 2026-10-27
 ---
 
 # 系统架构与技术约定 (ARCHITECTURE.md)
@@ -92,3 +92,21 @@ cloudmirror 采用“客户端单中心调度、两端隔离拉取、单向新�
 - **真源目录**：`ai/`（`PROJECT.md`, `ARCHITECTURE.md`, `STATE.md`, `TASK.md`, `DECISIONS.md`, `ISSUES.md`, `sessions/`）；
 - **派生缓存**：`ai/.cache/index.sqlite`（提供 FTS5 全文搜索、ADR 结构化查询）；
 - **检查脚本**：`scripts/pcmp_index.py`，单文件零外部依赖，提供持续合规性自检与单测守护。
+
+## 5. S3 增量同步与对象存储架构 (S3 Engine Architecture)
+
+### 5.1 原生 SigV4 传输与内存保护
+- 基于 Python 标准库 `urllib.request` 与 `hashlib` 原生实现 AWS SigV4 签名机制，零 boto3 依赖；
+- 传输使用 `tempfile.SpooledTemporaryFile(max_size=8MB)`：小于 8MB 的小对象纯内存转发，超过 8MB 的大对象自动流式缓存至磁盘临时文件，直传目标端 S3，有效杜绝传输几百兆附件时的 OOM 风险；
+- 单对象网络抖动提供 3 次指数退避重试（0.5s, 1s, 2s）。
+
+### 5.2 失败状态语义与状态保护
+- 严格遵循 `failed_count == 0` 判定 `success: True`；
+- 单个对象传输异常立即标记 `status: "partial"` 并回传 `failed_objects` 清单；
+- 备桶元数据中的 `objects_count` 与 `last_sync` 仅在 100% 全量成功时更新，避免任何由于网络抖动导致的误报与伪造完成。
+
+### 5.3 思源笔记不可变镜像约定与已知限制
+- **块与非块分流比对**：仅 `data/*.sy` 内容块路径走大小判定；`latest`、`assets/` 附件、`conf/` 配置等非块路径严格走 大小 + ETag 复合比对，防止同大小非内容寻址文件被漏传；
+- **指针后置传输**：排序阶段将 `latest`、`manifest.json`、`index.json`、`sync.json` 等关键指针对象强制排在数据块之后传输，确保中途断网或部分失败时备桶绝不留下指向缺失块的悬空坏指针；
+- **已知限制与操作建议**：当前单 PUT 传输上限为 5GB（后续版本演进 S3 Multipart Upload 分片断点续传）；同步期间若源桶同时发生并发写，备桶可能拿到跨版本混合快照，生产环境建议仅在思源笔记客户端处于空闲状态时运行增量 Mirror。
+

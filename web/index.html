@@ -91,6 +91,10 @@
             <span class="pulse-dot" id="topbar-profile-dot" style="background:#10b981; width:8px; height:8px;"></span>
             <span id="topbar-profile-text" style="font-size:0.75rem; font-weight:600; color:var(--text-secondary);">生产真实环境 (prod)</span>
           </div>
+          <div id="topbar-token-btn" style="display:flex; align-items:center; gap:6px; background:rgba(255,255,255,0.05); padding:6px 12px; border-radius:20px; border:1px solid var(--border-subtle); cursor:pointer; transition:all 0.2s;" title="配置 API Token 鉴权 (对应 CLOUDMIRROR_API_TOKEN)">
+            <span class="pulse-dot" id="topbar-token-dot" style="background:#64748b; width:8px; height:8px;"></span>
+            <span id="topbar-token-text" style="font-size:0.75rem; font-weight:600; color:var(--text-secondary);">🔑 Token</span>
+          </div>
           <button class="btn btn-secondary btn-sm" id="btn-quick-check">
             <span>🛡️</span> PCMP 合规检查
           </button>
@@ -1109,6 +1113,52 @@
         <button type="button" class="btn btn-danger" id="btn-execute-dedupe-clean" style="display:none;">
           <span>🧹</span> 确认清理冗余副本 (<span id="dedupe-clean-btn-count">0</span> 项)
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: API Token Settings -->
+  <div class="modal" id="modal-token-settings">
+    <div class="modal-content" style="max-width: 500px;">
+      <div class="modal-header">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <span style="font-size:1.4rem;">🔑</span>
+          <div>
+            <h3 style="margin:0; font-size:1.05rem;">API Token 鉴权设置</h3>
+            <p style="margin:2px 0 0; font-size:0.75rem; color:var(--text-muted);">当后端启用 CLOUDMIRROR_API_TOKEN 时用于验证控制台请求</p>
+          </div>
+        </div>
+        <button class="modal-close" id="btn-close-token-modal">&times;</button>
+      </div>
+      <div class="modal-body" style="padding:16px 20px;">
+        <div id="token-auth-warning" style="display:none; margin-bottom:14px; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:6px; padding:10px 14px; font-size:0.8rem; color:#f87171;">
+          ⚠️ 服务端返回 401 Unauthorized。请在下方输入正确的 API Token 后重试。
+        </div>
+        <div class="form-group" style="margin-bottom:14px;">
+          <label style="display:block; font-size:0.8rem; font-weight:600; margin-bottom:6px; color:var(--text-secondary);">
+            访问令牌 (Bearer Token)
+          </label>
+          <div style="display:flex; gap:8px;">
+            <input type="password" id="input-api-token" class="form-control" placeholder="例如：my-secret-token" style="flex:1; font-family:var(--font-mono); font-size:0.85rem;">
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-toggle-token-visibility" style="padding:0 10px;" title="显示/隐藏明文">👁️</button>
+          </div>
+          <p style="font-size:0.75rem; color:var(--text-dim); margin:6px 0 0;">
+            提示：对应启动参数 <code>--token</code> 或环境变量 <code>CLOUDMIRROR_API_TOKEN</code>。若后端未设置则无需填写。
+          </p>
+        </div>
+        <div class="form-group" style="margin-bottom:8px;">
+          <label style="display:flex; align-items:center; gap:6px; font-size:0.8rem; color:var(--text-secondary); cursor:pointer;">
+            <input type="checkbox" id="token-remember-local" checked style="accent-color:var(--primary);">
+            <span>记住此设备（持久保存在浏览器 localStorage）</span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer" style="display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--border-subtle); padding:12px 20px;">
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-clear-api-token" style="color:#ef4444;">清除 Token</button>
+        <div style="display:flex; gap:8px;">
+          <button type="button" class="btn btn-secondary" id="btn-cancel-token-modal">取消</button>
+          <button type="button" class="btn btn-primary" id="btn-save-api-token">保存并应用</button>
+        </div>
       </div>
     </div>
   </div>

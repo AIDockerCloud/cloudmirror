@@ -1174,11 +1174,11 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
 
             # Mock / Test mode for duplicate scanning
             mock_items = [
-                bw_sync._item("mock-1", "GitHub 主账号", pw="ghp_live_token_1", user="developer", uri="https://github.com/login", favorite=True),
-                bw_sync._item("mock-2", "GitHub 冗余克隆", pw="ghp_live_token_1", user="developer", uri="https://github.com/settings"),
-                bw_sync._item("mock-3", "GitHub 工作账号", pw="ghp_work_pass_99", user="dev_corp", uri="https://github.com"),
-                bw_sync._item("mock-4", "OpenAI API Key", pw="sk-proj-xxxx", user="admin@example.com", uri="https://platform.openai.com"),
-                bw_sync._item("mock-5", "OpenAI 冗余副本", pw="sk-proj-xxxx", user="admin@example.com", uri="https://platform.openai.com"),
+                bw_sync._item("mock-1", "GitHub 主账号", pw="ghp_live_token_1", user="developer", uri="https://github.com/login", favorite=True, creationDate="2023-01-01T08:00:00Z"),
+                bw_sync._item("mock-2", "GitHub 冗余克隆", pw="ghp_live_token_1", user="developer", uri="https://github.com/login", creationDate="2023-06-01T08:00:00Z"),
+                bw_sync._item("mock-3", "GitHub 工作账号", pw="ghp_work_pass_99", user="dev_corp", uri="https://github.com", creationDate="2023-02-01T08:00:00Z"),
+                bw_sync._item("mock-4", "OpenAI API Key", pw="sk-proj-xxxx", user="admin@example.com", uri="https://platform.openai.com", creationDate="2023-03-01T08:00:00Z"),
+                bw_sync._item("mock-5", "OpenAI 冗余副本", pw="sk-proj-xxxx", user="admin@example.com", uri="https://platform.openai.com", creationDate="2023-07-01T08:00:00Z"),
             ]
             res = bw_sync.find_duplicates_in_items(mock_items)
             self.send_json({
@@ -1223,6 +1223,7 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
                 not src.get("server", "").endswith("example.com")
             )
 
+            t0 = time.time()
             clean_res = {"deleted_count": len(duplicate_ids), "deleted_ids": duplicate_ids, "errors": []}
             if has_real_endpoints and apply_mode:
                 side_key = src.get("appdata_dir") or src.get("id", "node").replace("bw-", "")
@@ -1255,6 +1256,7 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
                 src["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M")
                 datastore.save()
 
+            elapsed = round(time.time() - t0, 2)
             task_rec = {
                 "id": f"task-dedupe-{int(time.time())}",
                 "title": f"清理重复数据: {src['name']}",
@@ -1264,7 +1266,7 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
                 "status": "success",
                 "summary": f"完成清理 {clean_res['deleted_count']} 个完全一致的重复项（{'永久删除' if permanent else '已移入回收站'}，已保留原件）",
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "duration_s": 0.5,
+                "duration_s": elapsed,
             }
             datastore.add_task(task_rec)
 
@@ -1396,7 +1398,9 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/schedules/run":
             sched_id = body.get("id")
+            t0 = time.time()
             res = schedule_manager.trigger_schedule(sched_id)
+            elapsed = round(time.time() - t0, 2)
             if res.get("success"):
                 datastore.add_task({
                     "id": f"task-sched-{int(time.time())}",
@@ -1407,7 +1411,7 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
                     "status": "success",
                     "summary": f"执行主备增量同步，更新 {res.get('synced_objects', 0)} 个笔记对象",
                     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "duration_s": 1.6,
+                    "duration_s": elapsed,
                 })
             self.send_json(res)
 
