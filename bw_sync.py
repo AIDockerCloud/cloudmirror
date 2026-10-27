@@ -51,30 +51,55 @@ class BwError(Exception):
     pass
 
 
-def load_dotenv(dotenv_path=None, override=False):
+# ---------------------------------------------------------------------------
+# 环境变量加载规则：操作系统 Shell 显式导出的环境变量 (OS Environment) > .env 配置文件
+# 无论何时热重载，均仅补充当前进程环境中缺失或为空的键值，严禁逆向覆盖已导出的系统环境变量。
+# ---------------------------------------------------------------------------
+_INITIAL_OS_ENV_KEYS = set(os.environ.keys())
+_DOTENV_LAST_MTIME = 0.0
+
+
+def load_dotenv(dotenv_path=None, force=False):
     """
-    轻量原生加载 .env 环境变量文件，支持注释、引号与空行过滤（零外部 pip 依赖）。
-    支持 override 参数（当环境变量已存在时是否以 .env 中的最新值为准）。
+    轻量原生安全加载 .env 环境变量文件（零外部 pip 依赖）。
+    核心原则：OS Environment > .env。
+    1. 凡在进程启动时已存在于系统 Shell 环境的变量，具有最高优先级，任何情况下均绝不被 .env 覆盖；
+    2. 基于文件 st_mtime 进行增量加载，避免无改动时重复读盘；
+    3. 支持动态热重载：当用户在运行期间创建或编辑 .env 时，未被 OS 锁定的变量可即时安全生效。
     """
+    global _DOTENV_LAST_MTIME
     if dotenv_path is None:
         dotenv_path = Path(__file__).resolve().parent / ".env"
-    if dotenv_path.exists():
-        try:
-            for line in dotenv_path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                k = k.strip()
-                v = v.strip()
-                if len(v) >= 2 and ((v[0] == '"' and v[-1] == '"') or (v[0] == "'" and v[-1] == "'")):
-                    v = v[1:-1]
-                if k and (override or k not in os.environ or not os.environ.get(k)):
-                    os.environ[k] = v
-        except Exception:
-            pass
+    else:
+        dotenv_path = Path(dotenv_path)
+
+    if not dotenv_path.is_file():
+        return
+
+    try:
+        current_mtime = dotenv_path.stat().st_mtime
+        if not force and current_mtime <= _DOTENV_LAST_MTIME:
+            return
+
+        for line in dotenv_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k = k.strip()
+            v = v.strip()
+            if len(v) >= 2 and ((v[0] == '"' and v[-1] == '"') or (v[0] == "'" and v[-1] == "'")):
+                v = v[1:-1]
+            # 严格优先级：如果变量来自外部系统环境 (OS Environment)，永不覆盖
+            if k and k not in _INITIAL_OS_ENV_KEYS:
+                os.environ[k] = v
+        _DOTENV_LAST_MTIME = current_mtime
+    except Exception:
+        pass
+
 
 load_dotenv()
+
 
 
 # ---------------------------------------------------------------------------
@@ -394,7 +419,7 @@ class RealBwClient:
         cid = os.environ.get(self._cid_env)
         csec = os.environ.get(self._csec_env)
         if (not cid or not csec) and self._cid_env and self._csec_env:
-            load_dotenv(override=True)
+            load_dotenv()
             cid = os.environ.get(self._cid_env)
             csec = os.environ.get(self._csec_env)
         return (cid, csec) if cid and csec else None
@@ -440,7 +465,7 @@ class RealBwClient:
             from_env = os.environ.get(self._pw_env_name) if is_valid_env else None
             # 若系统环境中未找到，且为合法变量名，动态重新尝试从 .env 加载（支持服务运行期间更新 .env 即时生效）
             if not from_env and is_valid_env:
-                load_dotenv(override=True)
+                load_dotenv()
                 from_env = os.environ.get(self._pw_env_name)
             if from_env:
                 self._password = from_env

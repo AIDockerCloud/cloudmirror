@@ -76,17 +76,31 @@ class TestBwSync(unittest.TestCase):
             self.assertIn("BW_SYNC_PASSWORD", str(cm.exception))
 
     def test_load_dotenv_support(self):
-        """Native load_dotenv loads .env variables without external dependencies."""
+        """Native load_dotenv loads .env variables and enforces OS Environment > .env priority."""
         with tempfile.NamedTemporaryFile("w+", encoding="utf-8", delete=False) as tf:
-            tf.write("# Comment\nBW_SYNC_DOTENV_TEST_VAR=my_test_val_888\n")
+            tf.write("# Comment\nBW_SYNC_DOTENV_TEST_VAR=my_test_val_888\nOS_EXPORTED_KEY=value_from_dotenv\n")
             tf.flush()
             tpath = Path(tf.name)
         try:
+            # 1. Normal missing variable is loaded
             os.environ.pop("BW_SYNC_DOTENV_TEST_VAR", None)
-            bw_sync.load_dotenv(tpath)
+            bw_sync.load_dotenv(tpath, force=True)
             self.assertEqual(os.environ.get("BW_SYNC_DOTENV_TEST_VAR"), "my_test_val_888")
+
+            # 2. Strict OS Environment > .env priority:
+            # If a variable is in _INITIAL_OS_ENV_KEYS, .env MUST NEVER overwrite it
+            bw_sync._INITIAL_OS_ENV_KEYS.add("OS_EXPORTED_KEY")
+            os.environ["OS_EXPORTED_KEY"] = "original_shell_value"
+            bw_sync.load_dotenv(tpath, force=True)
+            self.assertEqual(
+                os.environ.get("OS_EXPORTED_KEY"),
+                "original_shell_value",
+                "OS Environment variable must never be overwritten by .env"
+            )
         finally:
+            bw_sync._INITIAL_OS_ENV_KEYS.discard("OS_EXPORTED_KEY")
             os.environ.pop("BW_SYNC_DOTENV_TEST_VAR", None)
+            os.environ.pop("OS_EXPORTED_KEY", None)
             if tpath.exists():
                 tpath.unlink()
 

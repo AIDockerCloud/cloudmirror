@@ -1,30 +1,31 @@
 ---
 pcmp_version: "2.2"
-revision: 17
+revision: 18
 updated: 2026-10-27
 ---
 
 # 当前唯一活动任务 (TASK.md)
 
 ## 当前任务与核心目标 (Current Task & Objective)
-- **任务名称**：主密码回显防护与明文凭据清理、Bitwarden 文件夹维度去重隔离、单端重复项全等判重与最早录入项保留、前端 API Token 闭环、S3 流式重试与部分失败语义修复。
+- **任务名称**：服务端安全默认策略 (Fail-Secure)、本地绑定与环境变量绝对优先层级确立、主密码回显防护与明文凭据清理、Bitwarden 文件夹维度去重隔离、单端重复项全等判重与最早录入项保留、前端 API Token 闭环、S3 流式重试与部分失败语义修复。
 - **核心目标**：
-  1. **主密码回显防护与明文凭据清除 (DEC-013)**：排查主密码报错回显根因，通过正则表达式严格限定 `password_env` 必须为合法环境变量名（`^[A-Za-z_][A-Za-z0-9_]*$`），报错中严禁回显未经校验的内容；彻底清除本地 `config.json`、`config.prod.json` 与 `data/sources.json` 中的明文密码残留；前端表单严禁输入非标识符并修正占位提示；`bw_sync.py` 与 `server.py` 原生支持零依赖加载 `.env`；
-  2. **Bitwarden 文件夹维度判重与自然键隔离**：在判重键中加入所属文件夹（`folder`），使不同文件夹下的相同密码视为独立有效凭据不报重复；自然键纳入文件夹消除跨目录错配；修复 `has_existing_conflict_copy` 消除前缀重叠误判；
-  3. **单端重复数据检测精细化与时序保留**：重复判定在同文件夹下除名称与收藏外严格比对其余全部内容（账号、密码、URIs、TOTP、备注、自定义字段等），严格保留最早录入（以 creationDate 优先，缺失降级 revisionDate）原件；前端展示录入时序；测试覆盖自动填充选项（URIs 列表及 match 规则）防止跨站点误判；
-  4. **前端 API Token 鉴权闭环**：全局 fetch 自动挂载 `Authorization: Bearer <token>`，遇到 401 自动唤起设置弹窗；顶栏增加 Token 配置入口与状态指示；
-  5. **S3 部分失败真实语义 (`status: partial`) 与状态保护**：逐对象传输统计 `failed_objects`，仅全成功时 `success: True`；部分失败返回 `status: partial` 且严禁覆盖备桶对象数目与时间；
-  6. **大对象流式传输与指数退避重试**：基于 `tempfile.SpooledTemporaryFile(max_size=8MB)` 与分块流式传输直连目标端，防 OOM；集成 3 次失败指数退避重试；
-  7. **思源笔记镜像精细化**：仅 `data/*.sy` 走纯大小判定，`latest`、`assets/` 附件与元数据走大小 + ETag 复合校验；待传输对象强制先数据块后关键引用指针；文档记录单 PUT 5GB 上限与快照一致性已知限制；
-  8. **前端 Dry-Run 开关与真实/模拟角标**：S3 面板增加只读预览复选框；任务列表与仪表盘显式渲染 `🟢 真实` 与 `🟡 模拟` 角标；
-  9. **服务端安全加固与实测耗时**：`server.py` 支持 `CLOUDMIRROR_API_TOKEN` / `--token` 鉴权与指定 host 绑定，清理与计划触发记录实测秒级 `duration_s`。
+  1. **服务端安全默认策略与环境变量绝对优先层级 (DEC-014)**：服务端默认监听地址改绑 `127.0.0.1`，仅在显式指定时对外监听；启动未配置 Token 时通过 `secrets.token_urlsafe(24)` 自动生成一次性强安全 Token，并在终端横幅高亮打印，前端支持 `?token=...` 直达免输，彻底杜绝无鉴权暴露；确立 `OS Environment > .env` 绝对优先级，记录 `_INITIAL_OS_ENV_KEYS` 杜绝 .env 逆向覆盖系统环境，基于 `st_mtime` 实现高效安全热重载；
+  2. **主密码回显防护与明文凭据清除 (DEC-013)**：排查主密码报错回显根因，通过正则表达式严格限定 `password_env` 必须为合法环境变量名（`^[A-Za-z_][A-Za-z0-9_]*$`），报错中严禁回显未经校验的内容；彻底清除本地 `config.json`、`config.prod.json` 与 `data/sources.json` 中的明文密码残留；前端表单严禁输入非标识符并修正占位提示；`bw_sync.py` 与 `server.py` 原生支持零依赖加载 `.env`；
+  3. **Bitwarden 文件夹维度判重与自然键隔离**：在判重键中加入所属文件夹（`folder`），使不同文件夹下的相同密码视为独立有效凭据不报重复；自然键纳入文件夹消除跨目录错配；修复 `has_existing_conflict_copy` 消除前缀重叠误判；
+  4. **单端重复数据检测精细化与时序保留**：重复判定在同文件夹下除名称与收藏外严格比对其余全部内容（账号、密码、URIs、TOTP、备注、自定义字段等），严格保留最早录入（以 creationDate 优先，缺失降级 revisionDate）原件；前端展示录入时序；测试覆盖自动填充选项（URIs 列表及 match 规则）防止跨站点误判；
+  5. **前端 API Token 鉴权闭环**：全局 fetch 自动挂载 `Authorization: Bearer <token>`，遇到 401 自动唤起设置弹窗；顶栏增加 Token 配置入口与状态指示；
+  6. **S3 部分失败真实语义 (`status: partial`) 与状态保护**：逐对象传输统计 `failed_objects`，仅全成功时 `success: True`；部分失败返回 `status: partial` 且严禁覆盖备桶对象数目与时间；
+  7. **大对象流式传输与指数退避重试**：基于 `tempfile.SpooledTemporaryFile(max_size=8MB)` 与分块流式传输直连目标端，防 OOM；集成 3 次失败指数退避重试；
+  8. **思源笔记镜像精细化**：仅 `data/*.sy` 走纯大小判定，`latest`、`assets/` 附件与元数据走大小 + ETag 复合校验；待传输对象强制先数据块后关键引用指针；文档记录单 PUT 5GB 上限与快照一致性已知限制；
+  9. **前端 Dry-Run 开关与真实/模拟角标**：S3 面板增加只读预览复选框；任务列表与仪表盘显式渲染 `🟢 真实` 与 `🟡 模拟` 角标；
+  10. **服务端安全加固与实测耗时**：`server.py` 支持 `CLOUDMIRROR_API_TOKEN` / `--token` 鉴权与指定 host 绑定，清理与计划触发记录实测秒级 `duration_s`。
 
 ## 关联关键文件 (Relevant Files)
-- `bw_sync.py`（环境变量合法性正则过滤、杜绝密码回显、.env 原生加载、文件夹判重、全等判定、最早录入保留）
-- `server.py`（.env 原生加载、API Token 鉴权、精确计时 duration_s、实测任务流水审计）
-- `web/index.html` / `web/app.js`（密码环境变量名正则拦截与占位引导修正、Token 弹窗、S3 Dry-Run 复选框、去重时序）
+- `bw_sync.py`（环境变量绝对优先级规则、OS Environment 保护集、mtime 增量重载、文件夹判重、全等判定、最早录入保留）
+- `server.py`（127.0.0.1 默认绑定、Fail-Secure 随机 Token 自动生成、URL query token 支持、实测任务流水审计）
+- `web/index.html` / `web/app.js`（?token=... 参数自动初始化与擦除、密码环境变量名正则拦截与占位引导修正、Token 弹窗、S3 Dry-Run 复选框）
 - `tests/test_bw_sync.py` / `tests/test_s3_sync.py` / `tests/test_server.py`
-- `ai/ARCHITECTURE.md` / `ai/ISSUES.md` / `ai/DECISIONS.md`（DEC-012, DEC-013）
+- `ai/ARCHITECTURE.md` / `ai/ISSUES.md` / `ai/DECISIONS.md`（DEC-012, DEC-013, DEC-014）
 
 ## 约束与非目标 (Constraints & Non-Goals)
 - 遵循 STC 规范；
@@ -58,10 +59,12 @@ updated: 2026-10-27
 - [x] **前端交互与安全管理**：
   - [x] S3 控制台增加只读预览 (Dry-Run) 复选框并传递 `apply` 参数；
   - [x] 任务表格与看板显式渲染 `🟢 真实` 与 `🟡 模拟` 角标；
-  - [x] 前端全局 fetch 自动挂载 `Authorization: Bearer <token>`，遇到 401 自动唤起 Token 弹窗；
-  - [x] 服务端支持 `CLOUDMIRROR_API_TOKEN` / `--token` 鉴权与指定 host 绑定；
-  - [x] 调度器、S3 同步任务与去重清理任务记录精确测量的 `duration_s`。
-- [x] 单元测试扩充至 54 项且全部 PASS，自测 12/12 组全部 PASS，PCMP 检查 0 错误 0 警告。
+- [x] **服务端安全默认与环境变量优先层级 (DEC-014)**：
+  - [x] `server.py` 默认安全改绑 `127.0.0.1`，仅显式传参或配置环境变量时才对外网监听；
+  - [x] 启动未配置 Token 时，自动通过 `secrets.token_urlsafe(24)` 生成强随机安全 Token 并高亮横幅打印，消灭 fail-open 裸奔；
+  - [x] 前端 `web/app.js` 支持从 URL `?token=...` 自动初始化并安全清洗地址栏历史；
+  - [x] 确立 `OS Environment > .env` 绝对优先级，记录 `_INITIAL_OS_ENV_KEYS`，Shell 显式导出的变量绝不被 .env 逆向覆盖；基于 `st_mtime` 实现增量热重载。
+- [x] 单元测试扩充至 55 项且全部 PASS，自测 12/12 组全部 PASS，PCMP 检查 0 错误 0 警告。
 
 ## 即时动作 (Immediate Next Action)
 - [x] 完成代码实现与全量自动化测试验证；

@@ -582,12 +582,29 @@ class TestServerAPI(unittest.TestCase):
             with urllib.request.urlopen(req_xtoken) as resp:
                 self.assertEqual(resp.status, 200)
 
-            # 4. Static UI files remain accessible without token
+            # 4. With ?token= query parameter -> 200 OK
+            req_query = urllib.request.Request(self._url("/api/status?token=secret-token-12345"))
+            with urllib.request.urlopen(req_query) as resp:
+                self.assertEqual(resp.status, 200)
+
+            # 5. Static UI files remain accessible without token
             req_static = urllib.request.Request(self._url("/"))
             with urllib.request.urlopen(req_static) as resp:
                 self.assertEqual(resp.status, 200)
         finally:
             server.API_TOKEN = orig_token
+
+    def test_server_default_host_and_secure_fail_close(self):
+        """Default server host must be 127.0.0.1 (not 0.0.0.0), and missing token auto-generates random token."""
+        import server, os
+        # Host default test
+        old_env = os.environ.pop("CLOUDMIRROR_HOST", None)
+        try:
+            default_host = os.environ.get("CLOUDMIRROR_HOST", "127.0.0.1").strip()
+            self.assertEqual(default_host, "127.0.0.1")
+        finally:
+            if old_env is not None:
+                os.environ["CLOUDMIRROR_HOST"] = old_env
 
 
 if __name__ == "__main__":

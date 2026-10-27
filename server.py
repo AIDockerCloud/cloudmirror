@@ -697,7 +697,14 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
         bearer_token = ""
         if auth_hdr.lower().startswith("bearer "):
             bearer_token = auth_hdr[7:].strip()
-        return (bearer_token == API_TOKEN) or (token_hdr == API_TOKEN)
+        query_token = ""
+        if hasattr(self, "path") and "?" in self.path:
+            try:
+                parsed_q = parse_qs(urlparse(self.path).query)
+                query_token = parsed_q.get("token", [""])[0].strip()
+            except Exception:
+                pass
+        return (bearer_token == API_TOKEN) or (token_hdr == API_TOKEN) or (query_token == API_TOKEN)
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -1616,18 +1623,33 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "Unknown API route"}, status=404)
 
 
-def run_server(host: Optional[str] = None, port: int = 8765, token: Optional[str] = None):
+def run_server(host: Optional[str] = None, port: int = 8765, token: Optional[str] = None, no_auth: bool = False):
     global API_TOKEN
-    default_host = os.environ.get("CLOUDMIRROR_HOST", "0.0.0.0").strip()
+    import secrets
+    # 默认安全绑定 127.0.0.1，仅当用户显式指定 --host 0.0.0.0 或环境变量时对外广播
+    default_host = os.environ.get("CLOUDMIRROR_HOST", "127.0.0.1").strip()
     bind_host = host or default_host
-    if token is not None:
+    if no_auth:
+        API_TOKEN = ""
+        print("⚠️ [安全警告] 已显式启用 --no-auth 免密模式，API 鉴权已关闭！")
+    elif token is not None:
         API_TOKEN = token.strip()
+    elif not API_TOKEN:
+        # 严格 Fail-Secure：未配置 Token 时，自动生成强随机安全 Token，绝不裸奔！
+        API_TOKEN = secrets.token_urlsafe(24)
+        print("=" * 68)
+        print("🔐 安全模式已启用：未配置 CLOUDMIRROR_API_TOKEN，已自动生成本次会话安全 Token:")
+        print(f"   Token: {API_TOKEN}")
+        print(f"   控制台直达链接: http://{bind_host}:{port}/?token={API_TOKEN}")
+        print("   提示：可在 .env 中添加 CLOUDMIRROR_API_TOKEN=<自定义Token> 固定凭据")
+        print("=" * 68)
+
     server = HttpServerClass((bind_host, port), CloudMirrorHandler)
     print(f"CloudMirror Web Server started at http://{bind_host}:{port}")
     if API_TOKEN:
-        print("🔐 API Token 鉴权已启用 (CLOUDMIRROR_API_TOKEN)")
+        print("🔐 API Token 鉴权已启用")
     else:
-        print("⚠️ 未启用 API Token 鉴权 (可通过 CLOUDMIRROR_API_TOKEN 启用)")
+        print("⚠️ 未启用 API Token 鉴权")
     print(f"Serving UI from {WEB_DIR}")
     try:
         server.serve_forever()
@@ -1638,9 +1660,10 @@ def run_server(host: Optional[str] = None, port: int = 8765, token: Optional[str
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CloudMirror Web Console Server")
-    default_host = os.environ.get("CLOUDMIRROR_HOST", "0.0.0.0").strip()
+    default_host = os.environ.get("CLOUDMIRROR_HOST", "127.0.0.1").strip()
     parser.add_argument("--host", default=default_host, help=f"Listen host (default {default_host})")
     parser.add_argument("--port", type=int, default=8765, help="Listen port (default 8765)")
     parser.add_argument("--token", default=None, help="API Authentication Token (overrides CLOUDMIRROR_API_TOKEN)")
+    parser.add_argument("--no-auth", action="store_true", default=False, help="Disable API Token authentication (insecure, for testing/dev only)")
     args = parser.parse_args()
-    run_server(args.host, args.port, token=args.token)
+    run_server(args.host, args.port, token=args.token, no_auth=args.no_auth)

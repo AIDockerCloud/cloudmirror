@@ -1,6 +1,6 @@
 ---
 pcmp_version: "2.2"
-revision: 10
+revision: 11
 updated: 2026-10-27
 ---
 
@@ -246,7 +246,37 @@ updated: 2026-10-27
 - 备选方案 (Alternatives): 忽略文件夹或强行要求不同密码。放弃理由：违背用户实际生活工作密码隔离管理习惯。
 - 影响 (Consequences): 单元测试由 43 项扩充至 51 项且全部通过；自测 12/12 组全部通过；代码与协议规范严格保持一致。
 
+---
 
+## DEC-013 — 主密码报错回显防御、配置明文清除与原生 .env 模块集成
+日期: 2026-10-27 | 状态: Accepted
+- 确认来源: 人类开发者指令“连接失败: ... 未检测到主密码环境变量 ... 还把密码打出来了！！！”及修复落地指令
+- Supersedes: 无
+- Superseded-by: 无
+- 复审触发条件 (Review Trigger): 当引入密码管理器外部安全凭据提供商 (Secret Manager) 时复审
+- 背景 (Context): 前端输入框占位符误导用户在 password_env 输入真实主密码，底层异常未校验格式直接格式化该字符串导致明文密码回显；同时本地配置文件残留明文。
+- 决策 (Decision):
+  1. 正则强校验 `password_env` 必须匹配 `^[A-Za-z_][A-Za-z0-9_]*$`，非法输入统一降级脱敏为通用占位符，严禁将未校验内容拼入异常回显；
+  2. 清除 `config.json`、`config.prod.json` 与 `data/sources.json` 本地明文，重置为标准变量名；
+  3. 前端修正表单占位提示，并增加正则拦截；
+  4. 实现零第三方依赖的原生 `.env` 加载器。
+- 理由 (Reason): 践行零密码泄露红线，杜绝任何形式的凭据回显。
+- 影响 (Consequences): 彻底杜绝了明文密码在 UI 和日志中泄露风险；测试用例新增防回显专项测试。
 
+---
 
-
+## DEC-014 — 服务端安全默认策略 (Fail-Secure)、本地绑定与环境变量绝对优先层级
+日期: 2026-10-27 | 状态: Accepted
+- 确认来源: 人类开发者明确审查指令“均认可，请执行”（关于鉴权默认 fail-secure 改绑 127.0.0.1、随机 Token 生成与 .env 优先级修复）
+- Supersedes: 无
+- Superseded-by: 无
+- 复审触发条件 (Review Trigger): 当引入多租户权限控制体系或专用网关前置代理时复审
+- 背景 (Context):
+  1. 服务端此前默认监听 `0.0.0.0`，在未配置 Token 时全放行（fail-open），缺乏对外暴露保护；
+  2. 热重载使用了 `override=True`，导致用户在 Shell 中显式导出的新环境变量可能被 `.env` 中的旧内容逆向覆盖，违背 12-Factor 原则中 OS Environment > .env 准则。
+- 决策 (Decision):
+  1. **默认绑定本地环回**：`server.py` 默认监听地址由 `0.0.0.0` 改为 `127.0.0.1`，仅当显式指定 `--host 0.0.0.0` 或环境变量 `CLOUDMIRROR_HOST=0.0.0.0` 时对外监听；
+  2. **严格 Fail-Secure 鉴权**：未配置 Token 启动时，由 `secrets.token_urlsafe(24)` 自动生成一次性安全 Token，在终端醒目横幅中打印，前端支持 `?token=...` 直达免输，所有 API 全量强制鉴权，消灭未授权访问；
+  3. **环境变量绝对优先 (OS Env > .env)**：在模块初次导入时记录 `_INITIAL_OS_ENV_KEYS`，凡来自操作系统 Shell 显式导出的变量绝对禁止被 `.env` 覆盖；热重载基于文件 `st_mtime` 增量刷新未被 OS 锁定的变量。
+- 理由 (Reason): 践行“安全默认 (Secure by Default)”工程哲学，严守行业通用环境变量层级规范。
+- 影响 (Consequences): 消灭了无鉴权暴露隐患；单元测试扩充至 55 项全过；自测 12/12 组全过。

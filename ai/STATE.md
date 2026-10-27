@@ -1,13 +1,13 @@
 ---
 pcmp_version: "2.2"
-revision: 17
+revision: 18
 updated: 2026-10-27
 ---
 
 # 项目当前状态快照 (STATE.md)
 
 - **Last Updated**: 2026-10-27
-- **Overall Status**: cloudmirror 已圆满完成主密码回显防护与本地明文凭据清除（DEC-013）、Bitwarden 文件夹维度去重判重与自然键隔离、单端重复项除名称与收藏外全等精细化判重与最早录入（creationDate）原件保留、自动填充选项（URIs）严谨防误删校验、前端 API Token 拦截与 401 自动弹窗闭环、S3 部分失败真实语义修复、大对象流式传输与指数退避重试、思源笔记指针后置与块判定收窄、前端 Dry-Run 只读开关与真实/模拟角标、服务端精确实测计时（DEC-012）。自测 12/12 组、单元测试扩充至 54 项全过，PCMP 合规自检 0 错误 0 警告。
+- **Overall Status**: cloudmirror 已圆满完成服务端安全默认策略 (Fail-Secure) 与环境变量绝对优先层级确立（DEC-014）、主密码回显防护与本地明文凭据清除（DEC-013）、Bitwarden 文件夹维度去重判重与自然键隔离、单端重复项全等精细化判重与最早录入原件保留、自动填充选项严谨防误删校验、前端 API Token 拦截与 401 自动弹窗闭环、S3 流式重试与部分失败真实语义修复（DEC-012）。自测 12/12 组全部通过，单元测试扩充至 55 项全部通过，PCMP 合规自检 0 错误 0 警告。
 
 ## 已完成 (Completed)
 - [已确认] 完成核心同步脚本 `bw_sync.py` 编写，实现条目规范化、SHA-256 哈希判等、自然键配对与“只增不改不删”状态机。
@@ -36,8 +36,12 @@ updated: 2026-10-27
 - [已确认] 闭环前端 API Token 鉴权（全局 fetch 拦截自动附加 Bearer Token、401 自动唤起设置弹窗、顶栏 Token 状态指示与持久化存储）；
 - [已确认] 确认重复项判重严格比对自动填充选项（URIs 列表及 match 规则确定性排序），不同网站凭据绝不误杀（测试用例覆盖）；
 - [已确认] 修复 dedupe clean 与 schedule run 剩余硬编码 duration_s，改为实测耗时；在 ARCHITECTURE.md 与 ISSUES.md 登记 S3 单 PUT 5GB 上限与思源笔记快照一致性已知限制。
-- [已确认] 修复凭据环境变量回显泄露风险：彻底擦除本地配置文件的明文凭据残留；RealBwClient 严格校验环境变量格式，严禁将非法标识或疑似明文密码作为变量名回显；前端表单 placeholder 修正为安全指引并增加提交正则校验；bw_sync 与 server 原生支持 .env 自动加载。
-- [已确认] 自动化测试套件扩充至 54 项（`tests/test_pcmp_index.py`、`tests/test_bw_sync.py`、`tests/test_s3_sync.py`、`tests/test_server.py`），100% 通过。
+- [已确认] 修复凭据环境变量回显泄露风险（DEC-013）：彻底擦除本地配置文件的明文凭据残留；RealBwClient 严格校验环境变量格式，严禁将非法标识或疑似明文密码作为变量名回显；前端表单 placeholder 修正为安全指引并增加提交正则校验；bw_sync 与 server 原生支持 .env 自动加载。
+- [已确认] 确立服务端安全默认策略与环境变量绝对优先层级（DEC-014）：
+  - `server.py` 默认绑定地址改为 `127.0.0.1`，仅在显式指定时对外监听；
+  - 启动未配置 Token 时自动生成强随机 Token 并显著打印，前端支持 `?token=...` 直达免输，消灭未授权访问；
+  - 确立 `OS Environment > .env` 绝对优先级，记录 `_INITIAL_OS_ENV_KEYS` 杜绝 .env 逆向覆盖系统环境，基于 `st_mtime` 实现高效安全热重载。
+- [已确认] 自动化测试套件扩充至 55 项（`tests/test_pcmp_index.py`、`tests/test_bw_sync.py`、`tests/test_s3_sync.py`、`tests/test_server.py`），100% 通过。
 - [已确认] 运行 `python3 bw_sync.py --selftest`，12 组场景离线自测全部通过。
 - [已确认] 运行 `python3 scripts/pcmp_index.py --check` 与 `--update`，0 错误 0 警告，派生索引已同步。
 

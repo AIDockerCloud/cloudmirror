@@ -45,6 +45,19 @@ function updateTopBarTokenUI() {
   }
 }
 
+// 支持从 URL 查询参数 ?token=... 自动初始化并写入本地存储，同时擦除 URL 避免历史记录保留
+try {
+  const _urlParams = new URLSearchParams(window.location.search);
+  const _qToken = _urlParams.get('token');
+  if (_qToken) {
+    setStoredApiToken(_qToken.trim(), true);
+    const _cleanUrl = window.location.pathname + window.location.hash;
+    window.history.replaceState({}, document.title, _cleanUrl);
+  }
+} catch (e) {
+  // Ignore in restricted environments
+}
+
 // Global fetch wrapper for automatic Bearer token injection and 401 handling
 const _nativeFetch = window.fetch;
 window.fetch = async function (resource, init) {
