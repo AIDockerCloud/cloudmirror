@@ -3405,6 +3405,9 @@ function initModals() {
   document.getElementById('topbar-token-btn')?.addEventListener('click', () => openTokenModal(false));
   document.getElementById('btn-close-token-modal')?.addEventListener('click', () => closeModal(DOM.modalToken));
   document.getElementById('btn-cancel-token-modal')?.addEventListener('click', () => closeModal(DOM.modalToken));
+  document.getElementById('modal-token-settings')?.addEventListener('click', (e) => {
+    if (e.target.id === 'modal-token-settings') closeModal(DOM.modalToken);
+  });
 
   document.getElementById('btn-save-api-token')?.addEventListener('click', () => {
     const input = document.getElementById('input-api-token');
