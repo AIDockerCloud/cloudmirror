@@ -1626,30 +1626,37 @@ class CloudMirrorHandler(BaseHTTPRequestHandler):
 def run_server(host: Optional[str] = None, port: int = 8765, token: Optional[str] = None, no_auth: bool = False):
     global API_TOKEN
     import secrets
-    # 默认安全绑定 127.0.0.1，仅当用户显式指定 --host 0.0.0.0 或环境变量时对外广播
+    # 默认安全绑定 127.0.0.1（本地优先，安全默认）
     default_host = os.environ.get("CLOUDMIRROR_HOST", "127.0.0.1").strip()
     bind_host = host or default_host
+    is_loopback = bind_host in ("127.0.0.1", "localhost", "::1")
+
     if no_auth:
         API_TOKEN = ""
         print("⚠️ [安全警告] 已显式启用 --no-auth 免密模式，API 鉴权已关闭！")
     elif token is not None:
         API_TOKEN = token.strip()
     elif not API_TOKEN:
-        # 严格 Fail-Secure：未配置 Token 时，自动生成强随机安全 Token，绝不裸奔！
-        API_TOKEN = secrets.token_urlsafe(24)
-        print("=" * 68)
-        print("🔐 安全模式已启用：未配置 CLOUDMIRROR_API_TOKEN，已自动生成本次会话安全 Token:")
-        print(f"   Token: {API_TOKEN}")
-        print(f"   控制台直达链接: http://{bind_host}:{port}/?token={API_TOKEN}")
-        print("   提示：可在 .env 中添加 CLOUDMIRROR_API_TOKEN=<自定义Token> 固定凭据")
-        print("=" * 68)
+        if not is_loopback:
+            # 严格 Fail-Secure：对外监听 (0.0.0.0 或公网/局域网 IP) 且未配置 Token 时，自动生成强随机安全 Token 严防裸奔！
+            API_TOKEN = secrets.token_urlsafe(24)
+            print("=" * 68)
+            print("🔐 安全保护已启用：检测到服务对外监听 (非本地回环) 且未配置 Token，")
+            print(f"   已自动生成本次会话安全 Token: {API_TOKEN}")
+            print(f"   控制台直达链接: http://{bind_host}:{port}/?token={API_TOKEN}")
+            print("   提示：可在 .env 中配置 CLOUDMIRROR_API_TOKEN=<自定义Token> 固定凭据")
+            print("=" * 68)
+        else:
+            # 践行“默认改绑 127.0.0.1，没配 token 就不对外”原则：
+            # 本机本地访问无需额外配置 Token，数据即开即用；对外物理隔离不可达。
+            API_TOKEN = ""
 
     server = HttpServerClass((bind_host, port), CloudMirrorHandler)
     print(f"CloudMirror Web Server started at http://{bind_host}:{port}")
     if API_TOKEN:
         print("🔐 API Token 鉴权已启用")
     else:
-        print("⚠️ 未启用 API Token 鉴权")
+        print("ℹ️ 本地安全模式：已绑定 127.0.0.1，未对外暴露 (可通过 CLOUDMIRROR_API_TOKEN 启用 Token 鉴权)")
     print(f"Serving UI from {WEB_DIR}")
     try:
         server.serve_forever()
